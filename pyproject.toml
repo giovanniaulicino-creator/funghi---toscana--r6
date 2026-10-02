@@ -4,13 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "funghi-toscana-r6"
-version = "0.1.0"
+version = "0.2.0"
 description = "External scientific data builder for Funghi Toscana AI R6"
 requires-python = ">=3.11"
-dependencies = ["requests>=2.32,<3"]
+dependencies = [
+  "requests>=2.32,<3",
+  "selenium>=4.35,<5",
+]
 
 [project.scripts]
 funghi-r6 = "funghi_r6.cli:main"
+funghi-r6-sir-audit = "funghi_r6.sir_audit:main"
 
 [tool.setuptools.package-data]
 funghi_r6 = ["schema.sql"]

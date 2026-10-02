@@ -39,7 +39,7 @@ def main() -> int:
         _write_diag(out_dir, {"status": "BLOCKED", "reason": "station_catalog_count", "catalog": catalog_health})
         raise SystemExit(f"Catalogo strutturale {len(stations)}/{SETTINGS.expected_stations}: ACTIVE non pubblicabile")
 
-    official_rain, sir_health = fetch_official_rain(http)
+    official_rain, sir_health = fetch_official_rain(http, allow_browser=True)
     if d1:
         d1.source_health("sir_rainfall", sir_health)
 

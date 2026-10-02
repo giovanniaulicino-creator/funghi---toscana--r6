@@ -1,0 +1,45 @@
+name: R6 SIR Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/funghi_r6/sir.py'
+      - 'src/funghi_r6/sir_audit.py'
+      - 'pyproject.toml'
+      - '.r6-sir-fix-request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: funghi-toscana-r6-sir-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install R6 + browser fallback
+        run: pip install -e .
+      - name: Show Chrome availability
+        shell: bash
+        run: |
+          google-chrome --version || chromium --version || chromium-browser --version || true
+      - name: Audit SIR/CFR rainfall
+        run: python -m funghi_r6.sir_audit --out out/sir-audit.json --minimum 100
+      - name: Upload SIR audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r6-sir-audit-${{ github.run_id }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
