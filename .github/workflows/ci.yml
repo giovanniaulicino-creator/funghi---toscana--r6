@@ -25,3 +25,5 @@ jobs:
         run: python -m compileall -q src tests
       - name: Worker JavaScript syntax audit
         run: node --check worker/src/index.js
+      - name: Worker contract tests
+        run: node worker/test-worker.mjs

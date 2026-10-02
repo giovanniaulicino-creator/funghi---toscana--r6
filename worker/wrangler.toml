@@ -1,0 +1,9 @@
+name = "funghi-toscana-r6-api"
+main = "src/index.js"
+compatibility_date = "2026-10-02"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "funghi-toscana-r6"
+database_id = "b198c62b-1165-4626-9bd9-40f10c6ff432"

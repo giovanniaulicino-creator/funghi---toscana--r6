@@ -1,0 +1,6 @@
+{
+  "name": "funghi-toscana-r6-worker",
+  "private": true,
+  "type": "module",
+  "version": "6.5.0"
+}
