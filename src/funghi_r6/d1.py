@@ -177,7 +177,10 @@ class D1:
                 raise RuntimeError(f"D1 rete/timeout dopo {attempt} tentativi: {exc}") from exc
             except requests.HTTPError as exc:
                 last_error = exc
-                raise RuntimeError(f"D1 HTTP non recuperabile: {exc}") from exc
+                detail = ""
+                if exc.response is not None:
+                    detail = f" | risposta Cloudflare: {exc.response.text[:1000]}"
+                raise RuntimeError(f"D1 HTTP non recuperabile: {exc}{detail}") from exc
             except RuntimeError as exc:
                 last_error = exc
                 raise
@@ -190,7 +193,14 @@ class D1:
     def batch(self, statements: list[tuple[str, list[Any]]]) -> list[dict[str, Any]]:
         if not statements:
             return []
-        body = [{"sql": sql, "params": params} for sql, params in statements]
+        # Cloudflare D1 REST /query richiede un oggetto con chiave "batch";
+        # un array JSON nudo viene rifiutato con HTTP 400.
+        body = {
+            "batch": [
+                {"sql": sql, "params": params}
+                for sql, params in statements
+            ]
+        }
         return self._post(body, timeout=60)
 
     def init_schema(self, schema: str) -> None:

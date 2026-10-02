@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from funghi_r6.d1 import split_utf8_chunks, validate_snapshot_contract
+from funghi_r6.d1 import D1, split_utf8_chunks, validate_snapshot_contract
 from funghi_r6.assemble import assemble_station
 
 
@@ -132,3 +132,45 @@ def test_target_day_drives_forecast_not_runner_utc_date():
     )
     assert station["forecast_precipitation_7d_mm"] == 3
     assert station["forecast_temperature_mean_7d_c"] == 15
+
+
+def test_d1_rest_batch_uses_required_cloudflare_envelope(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"success":true,"result":[]}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "success": True,
+                "result": [
+                    {"success": True, "results": []},
+                    {"success": True, "results": []},
+                ],
+            }
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("funghi_r6.d1.requests.post", fake_post)
+
+    d1 = D1("account", "database", "token", max_retries=1)
+    statements = [
+        ("INSERT INTO x(a) VALUES(?)", [1]),
+        ("INSERT INTO x(a) VALUES(?)", [2]),
+    ]
+    d1.batch(statements)
+
+    assert captured["json"] == {
+        "batch": [
+            {"sql": "INSERT INTO x(a) VALUES(?)", "params": [1]},
+            {"sql": "INSERT INTO x(a) VALUES(?)", "params": [2]},
+        ]
+    }
