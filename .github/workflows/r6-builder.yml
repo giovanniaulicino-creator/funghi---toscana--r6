@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:
       CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
@@ -40,13 +40,15 @@ jobs:
       R6_BATCH_PAUSE_S: '1.5'
       R6_MAX_RETRIES: '5'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
+
       - name: Install builder
         run: pip install -e .
+
       - name: Resolve mode
         id: mode
         shell: bash
@@ -60,11 +62,26 @@ jobs:
           else
             echo "value=light" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Check scheduled D1 readiness
+        id: readiness
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]] && \
+             { [[ -z "$CF_ACCOUNT_ID" ]] || [[ -z "$CF_D1_DATABASE_ID" ]] || [[ -z "$CF_API_TOKEN" ]]; }; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=R6 D1 non configurato::Run schedulato saltato senza errore. Bootstrap manuale resta disponibile."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build scientific snapshot
+        if: steps.readiness.outputs.run == 'true'
         run: python -m funghi_r6.cli --mode "${{ steps.mode.outputs.value }}" --out out
+
       - name: Upload R6 audit artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always() && steps.readiness.outputs.run == 'true'
+        uses: actions/upload-artifact@v7
         with:
           name: r6-${{ steps.mode.outputs.value }}-${{ github.run_id }}
           path: out/

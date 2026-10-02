@@ -29,12 +29,15 @@ def _window(history: list[dict[str, Any]], days: int, field: str) -> list[Any]:
     return [x.get(field) for x in rows]
 
 
-def _daily_forecast(item: dict[str, Any], days: int, key: str) -> list[Any]:
+def _daily_forecast(item: dict[str, Any], days: int, key: str, target_day: str) -> list[Any]:
     daily = item.get("daily") or {}
     dates = list(daily.get("time") or [])
     values = list(daily.get(key) or [])
-    today = date.today().isoformat()
-    pairs = [(d, values[i] if i < len(values) else None) for i, d in enumerate(dates) if str(d) > today]
+    pairs = [
+        (str(d), values[i] if i < len(values) else None)
+        for i, d in enumerate(dates)
+        if str(d) > target_day
+    ]
     return [v for _, v in pairs[:days]]
 
 
@@ -46,8 +49,10 @@ def assemble_station(
     forecast: dict[str, Any] | None,
     soil: dict[str, Any] | None,
     history: list[dict[str, Any]],
+    target_day: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
+    resolved_target_day = target_day or date.today().isoformat()
     cur = (current or {}).get("current") or {}
     frc = forecast or {}
     sl = (soil or {}).get("current") or {}
@@ -72,21 +77,24 @@ def assemble_station(
         "wind_speed_ms": _n(cur.get("wind_speed_10m")),
         "wind_gust_ms": _n(cur.get("wind_gusts_10m")),
         "wind_direction_deg": _n(cur.get("wind_direction_10m")),
-        "rain_5d_mm": rain[5], "rain_7d_mm": rain[7], "rain_15d_mm": rain[15], "rain_30d_mm": rain[30],
+        "rain_5d_mm": rain[5],
+        "rain_7d_mm": rain[7],
+        "rain_15d_mm": rain[15],
+        "rain_30d_mm": rain[30],
         "temperature_mean_30d_c": _mean(_window(history, 30, "temperature_mean_c")),
         "humidity_mean_30d_pct": _mean(_window(history, 30, "humidity_mean_pct")),
         "wind_mean_30d_ms": _mean(_window(history, 30, "wind_mean_ms")),
         "et0_30d_mm": _sum(_window(history, 30, "et0_mm")),
-        "forecast_precipitation_7d_mm": _sum(_daily_forecast(frc, 7, "precipitation_sum")),
-        "forecast_precipitation_15d_mm": _sum(_daily_forecast(frc, 15, "precipitation_sum")),
-        "forecast_temperature_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_mean")),
-        "forecast_temperature_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_mean")),
-        "forecast_humidity_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_mean")),
-        "forecast_humidity_mean_15d_pct": _mean(_daily_forecast(frc, 15, "relative_humidity_2m_mean")),
-        "forecast_wind_mean_7d_ms": _mean(_daily_forecast(frc, 7, "wind_speed_10m_mean")),
-        "forecast_wind_mean_15d_ms": _mean(_daily_forecast(frc, 15, "wind_speed_10m_mean")),
-        "forecast_et0_7d_mm": _sum(_daily_forecast(frc, 7, "et0_fao_evapotranspiration")),
-        "forecast_et0_15d_mm": _sum(_daily_forecast(frc, 15, "et0_fao_evapotranspiration")),
+        "forecast_precipitation_7d_mm": _sum(_daily_forecast(frc, 7, "precipitation_sum", resolved_target_day)),
+        "forecast_precipitation_15d_mm": _sum(_daily_forecast(frc, 15, "precipitation_sum", resolved_target_day)),
+        "forecast_temperature_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_mean", resolved_target_day)),
+        "forecast_temperature_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_mean", resolved_target_day)),
+        "forecast_humidity_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_mean", resolved_target_day)),
+        "forecast_humidity_mean_15d_pct": _mean(_daily_forecast(frc, 15, "relative_humidity_2m_mean", resolved_target_day)),
+        "forecast_wind_mean_7d_ms": _mean(_daily_forecast(frc, 7, "wind_speed_10m_mean", resolved_target_day)),
+        "forecast_wind_mean_15d_ms": _mean(_daily_forecast(frc, 15, "wind_speed_10m_mean", resolved_target_day)),
+        "forecast_et0_7d_mm": _sum(_daily_forecast(frc, 7, "et0_fao_evapotranspiration", resolved_target_day)),
+        "forecast_et0_15d_mm": _sum(_daily_forecast(frc, 15, "et0_fao_evapotranspiration", resolved_target_day)),
         "soil_moisture_3_9": _n(sl.get("soil_moisture_3_to_9cm")),
         "soil_moisture_9_27": _n(sl.get("soil_moisture_9_to_27cm")),
         "soil_temperature_6cm_c": _n(sl.get("soil_temperature_6cm")),
@@ -106,9 +114,17 @@ def assemble_station(
         "provenance": provenance,
     }
     for key in ["temperature_c", "humidity_pct", "wind_speed_ms"]:
-        out["provenance"][key] = {"source": "Open-Meteo exact-point", "timestamp": cur.get("time"), "quality": "model_exact_point"}
+        out["provenance"][key] = {
+            "source": "Open-Meteo exact-point",
+            "timestamp": cur.get("time"),
+            "quality": "model_exact_point",
+        }
     for key in ["soil_moisture_3_9", "soil_moisture_9_27", "current_et0_mm"]:
-        out["provenance"][key] = {"source": "Open-Meteo exact-point", "timestamp": sl.get("time"), "quality": "model_exact_point"}
+        out["provenance"][key] = {
+            "source": "Open-Meteo exact-point",
+            "timestamp": sl.get("time"),
+            "quality": "model_exact_point",
+        }
     return out
 
 
@@ -126,7 +142,10 @@ def station_complete(s: dict[str, Any]) -> bool:
 
 def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
     total = len(stations)
-    def count(fn): return sum(1 for s in stations if fn(s))
+
+    def count(fn):
+        return sum(1 for s in stations if fn(s))
+
     numeric = lambda s, k: _n(s.get(k)) is not None
     return {
         "total": total,

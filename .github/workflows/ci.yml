@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -22,4 +22,6 @@ jobs:
       - name: Unit tests
         run: pytest -q
       - name: Python syntax audit
-        run: python -m compileall -q src
+        run: python -m compileall -q src tests
+      - name: Worker JavaScript syntax audit
+        run: node --check worker/src/index.js
