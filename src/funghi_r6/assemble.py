@@ -136,6 +136,7 @@ def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
         "history_30": count(lambda s: len(s.get("weather_daily_30d") or []) >= 28),
         "forecast_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_7d_mm", "forecast_temperature_mean_7d_c", "forecast_et0_7d_mm"])),
         "forecast_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_15d_mm", "forecast_temperature_mean_15d_c", "forecast_et0_15d_mm"])),
+        "et0": count(lambda s: all(numeric(s, k) for k in ["et0_30d_mm", "forecast_et0_7d_mm", "forecast_et0_15d_mm"])),
         "soil": count(lambda s: all(numeric(s, k) for k in ["soil_moisture_3_9", "soil_moisture_9_27"])),
         "scientific_complete": count(station_complete),
     }

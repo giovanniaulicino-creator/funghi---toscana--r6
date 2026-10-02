@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta, datetime, timezone
 import time
 from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
@@ -50,7 +51,8 @@ def fetch_component(
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     records: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
-    for batch_no, batch in enumerate(chunks(stations, batch_size), start=1):
+
+    def fetch_batch(batch: list[dict[str, Any]], label: str, depth: int = 0) -> None:
         try:
             params = {**_coords(batch), "timezone": "Europe/Rome", "wind_speed_unit": "ms", "cell_selection": "land"}
             if component == "current":
@@ -63,12 +65,14 @@ def fetch_component(
                 params["current"] = SOIL_VARS
                 payload = http.get_json(FORECAST_URL, params=params)
             elif component == "history_bootstrap":
-                end = date.today() - timedelta(days=1)
+                local_day = datetime.now(ZoneInfo("Europe/Rome")).date()
+                end = local_day - timedelta(days=1)
                 start = end - timedelta(days=34)
                 params.update({"start_date": start.isoformat(), "end_date": end.isoformat(), "daily": ARCHIVE_DAILY_VARS})
                 payload = http.get_json(ARCHIVE_URL, params=params)
             else:
                 raise ValueError(f"Componente sconosciuto: {component}")
+
             values = _as_list(payload)
             if len(values) != len(batch):
                 raise RuntimeError(f"{component}: risposta {len(values)} punti per {len(batch)} coordinate")
@@ -80,8 +84,28 @@ def fetch_component(
                 batch_records.append(record)
             if on_batch:
                 on_batch(component, batch_records)
+            print(f"[R6] {component}: {label} OK ({len(batch)} stazioni, totale {len(records)})", flush=True)
         except Exception as exc:
-            errors.append(f"batch {batch_no} {batch[0]['code']}..{batch[-1]['code']}: {exc}")
+            # Lo storico e' il blocco piu' pesante. Un errore su 12 coordinate non deve
+            # buttare via l'intero gruppo: lo dividiamo progressivamente e conserviamo
+            # ogni sottogruppo riuscito. Il fallimento diventa definitivo solo sulla
+            # singola stazione.
+            if component == "history_bootstrap" and len(batch) > 1:
+                mid = len(batch) // 2
+                left, right = batch[:mid], batch[mid:]
+                print(f"[R6] {component}: {label} fallito ({exc}); split {len(left)}+{len(right)}", flush=True)
+                if pause_s > 0:
+                    time.sleep(min(max(pause_s, 0.5), 3.0))
+                fetch_batch(left, f"{label}.A", depth + 1)
+                if pause_s > 0:
+                    time.sleep(min(max(pause_s, 0.5), 3.0))
+                fetch_batch(right, f"{label}.B", depth + 1)
+                return
+            errors.append(f"{label} {batch[0]['code']}..{batch[-1]['code']}: {exc}")
+            print(f"[R6] {component}: {label} ERRORE DEFINITIVO: {exc}", flush=True)
+
+    for batch_no, batch in enumerate(chunks(stations, batch_size), start=1):
+        fetch_batch(batch, f"batch {batch_no}")
         if pause_s > 0:
             time.sleep(pause_s)
     return records, errors

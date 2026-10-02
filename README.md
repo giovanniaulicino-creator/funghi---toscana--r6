@@ -87,3 +87,13 @@ Il bridge `/api/v1/stations` esiste per il successivo passaggio APK, ma **non de
 Resta invariato e indipendente:
 
 `https://funghi-toscana-radar.porcinitoscanaai.workers.dev`
+
+
+## Hardening R6.1
+
+- split ricorsivo dei soli batch storici che falliscono;
+- nessuna perdita dei sottobatch gia acquisiti;
+- diagnostica SIR/CFR separa raggiungibilita da acquisizione;
+- copertura ET0 esplicita;
+- data scientifica basata su Europe/Rome;
+- ACTIVE_PREVIOUS marcato atomicamente come PREVIOUS.

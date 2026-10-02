@@ -103,24 +103,43 @@ def parse_rainfall_html(html: str) -> dict[str, Any]:
 def fetch_official_rain(http, *, minimum_records: int = 100) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     best: dict[str, Any] = {"reference_time": None, "records": []}
     best_url: str | None = None
+    reachable_url: str | None = None
     errors: list[str] = []
+    parse_notes: list[str] = []
     for url in RAINFALL_SOURCES:
         try:
-            parsed = parse_rainfall_html(http.get_text(url))
-            if len(parsed["records"]) > len(best["records"]):
+            html = http.get_text(url)
+            if reachable_url is None:
+                reachable_url = url
+            parsed = parse_rainfall_html(html)
+            count = len(parsed["records"])
+            if count > len(best["records"]):
                 best, best_url = parsed, url
-            if len(parsed["records"]) >= minimum_records:
+            if count >= minimum_records:
                 break
-        except Exception as exc:  # network failures are reported, not promoted to scientific failure
+            parse_notes.append(f"{url}: servizio raggiungibile ma tabella utile {count}/{minimum_records}")
+        except Exception as exc:
             errors.append(f"{url}: {exc}")
     by_code = {r["code"]: r for r in best["records"]}
+    reachable = reachable_url is not None
+    acquisition_complete = len(by_code) >= minimum_records
+    if acquisition_complete:
+        last_error = None
+    elif parse_notes:
+        last_error = parse_notes[-1]
+    elif errors:
+        last_error = errors[-1]
+    else:
+        last_error = "Nessun endpoint SIR/CFR ha restituito una tabella pluviometrica utilizzabile"
     health = {
         "source": "SIR/CFR rainfall",
-        "reachable": bool(best_url),
+        "reachable": reachable,
         "acquired": len(by_code),
+        "acquisition_complete": acquisition_complete,
         "reference_time": best.get("reference_time"),
-        "source_url": best_url,
-        "last_success_at": datetime.now(timezone.utc).isoformat() if best_url else None,
-        "last_error": errors[-1] if errors and not best_url else None,
+        "source_url": best_url or reachable_url,
+        "last_success_at": datetime.now(timezone.utc).isoformat() if reachable else None,
+        "last_error": last_error,
+        "reachability_errors": errors,
     }
     return by_code, health

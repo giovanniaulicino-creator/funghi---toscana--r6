@@ -116,6 +116,7 @@ class D1:
         self._chunked(statements)
         # One D1 batch = atomic pointer swap: previous active is retained and new generation becomes visible in one transaction.
         self.batch([
+            ("UPDATE generation_runs SET status='PREVIOUS' WHERE generation=(SELECT value FROM system_state WHERE key='ACTIVE') AND status='ACTIVE'", []),
             ("INSERT INTO system_state(key,value,updated_at) VALUES('ACTIVE_PREVIOUS',(SELECT value FROM system_state WHERE key='ACTIVE'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=(SELECT value FROM system_state WHERE key='ACTIVE'),updated_at=datetime('now')", []),
             ("INSERT INTO system_state(key,value,updated_at) VALUES('ACTIVE',?,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=datetime('now')", [generation]),
             ("UPDATE generation_runs SET status='ACTIVE' WHERE generation=?", [generation]),

@@ -44,6 +44,7 @@ def main() -> int:
         d1.source_health("sir_rainfall", sir_health)
 
     local_now = datetime.now(ZoneInfo(SETTINGS.timezone))
+    target_day = local_now.date().isoformat()
     slot = (local_now.hour // 6) * 6
     cycle_key = f"{local_now.date().isoformat()}T{slot:02d}-{args.mode}"
 
@@ -83,7 +84,7 @@ def main() -> int:
 
     # Normal daily operation appends only the tiny past_days=2 slice already returned by forecast.
     for code, rec in component_cache.get("forecast", {}).items():
-        rows = [r for r in daily_rows(code, rec["payload"]) if r["day"] < date.today().isoformat()]
+        rows = [r for r in daily_rows(code, rec["payload"]) if r["day"] < target_day]
         if d1 and rows:
             d1.persist_daily(rows)
         if code not in history_by_code:
@@ -103,7 +104,7 @@ def main() -> int:
 
     cov = coverage(assembled)
     generated_at = datetime.now(timezone.utc).isoformat()
-    generation = f"R6-{date.today().isoformat()}-{datetime.now(timezone.utc).strftime('%H%M%SZ')}"
+    generation = f"R6-{target_day}-{datetime.now(timezone.utc).strftime('%H%M%SZ')}"
     sources = {
         "sir_cfr": sir_health,
         "sir_registry": catalog_health,
@@ -116,14 +117,14 @@ def main() -> int:
         },
         "radar": {"status": "SEPARATE_UNCHANGED", "worker": "https://funghi-toscana-radar.porcinitoscanaai.workers.dev"},
     }
-    complete = all(cov[k] == SETTINGS.expected_stations for k in ["structural", "current", "rain_5_7_15_30", "history_30", "forecast_7", "forecast_15", "soil", "scientific_complete"])
+    complete = all(cov[k] == SETTINGS.expected_stations for k in ["structural", "current", "rain_5_7_15_30", "history_30", "forecast_7", "forecast_15", "et0", "soil", "scientific_complete"])
     snapshot = {
         "meta": {
             "architecture": "r6-external-builder-d1-atomic",
             "model_version": SETTINGS.model_version,
             "generation": generation,
             "generated_at": generated_at,
-            "target_day": date.today().isoformat(),
+            "target_day": target_day,
             "cycle_key": cycle_key,
             "scientifically_complete": complete,
             "coverage": cov,
@@ -137,7 +138,7 @@ def main() -> int:
         "architecture": "R6",
         "generation": generation,
         "generated_at": generated_at,
-        "target_day": date.today().isoformat(),
+        "target_day": target_day,
         "cycle_key": cycle_key,
         "station_count": len(assembled),
         "coverage": cov,
@@ -154,7 +155,7 @@ def main() -> int:
     _write_diag(out_dir, manifest)
 
     if complete and d1:
-        d1.publish_generation(generation, date.today().isoformat(), assembled, manifest)
+        d1.publish_generation(generation, target_day, assembled, manifest)
     elif not complete:
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
         raise SystemExit("R6 incompleta: ACTIVE precedente resta intatto")
