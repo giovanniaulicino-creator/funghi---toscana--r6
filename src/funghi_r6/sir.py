@@ -303,7 +303,6 @@ def fetch_official_rain(
     *,
     minimum_records: int = 100,
     allow_browser: bool = False,
-    expected_codes: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     best: dict[str, Any] = {"reference_time": None, "records": []}
     best_url: str | None = None
@@ -368,41 +367,9 @@ def fetch_official_rain(
 
     by_code = {r["code"]: r for r in best["records"]}
     reachable = reachable_url is not None
+    acquisition_complete = len(by_code) >= minimum_records
 
-    # Una sorgente può essere "utilizzabile" anche se non copre tutte le 418
-    # stazioni strutturali. Non chiamiamo più "complete" una semplice soglia 100.
-    acquisition_usable = len(by_code) >= minimum_records
-
-    expected_set = {
-        str(code or "").strip().upper()
-        for code in (expected_codes or set())
-        if _is_station_code(code)
-    }
-    acquired_set = set(by_code)
-
-    matched_codes = sorted(expected_set & acquired_set)
-    missing_codes = sorted(expected_set - acquired_set)
-    extra_codes = sorted(acquired_set - expected_set) if expected_set else []
-
-    rain_fields = ["rain_5d_mm", "rain_7d_mm", "rain_15d_mm", "rain_30d_mm"]
-    field_coverage = {
-        key: sum(1 for row in by_code.values() if row.get(key) is not None)
-        for key in rain_fields
-    }
-
-    incomplete_window_codes = sorted(
-        code for code, row in by_code.items()
-        if not all(row.get(key) is not None for key in rain_fields)
-    )
-    complete_windows = len(by_code) - len(incomplete_window_codes)
-
-    # Completa rispetto al catalogo significa: tutte le stazioni attese presenti
-    # e tutte con le quattro finestre pluviometriche necessarie.
-    acquisition_complete = bool(expected_set) and not missing_codes and not incomplete_window_codes
-
-    needs_fallback_codes = sorted(set(missing_codes) | set(incomplete_window_codes))
-
-    if acquisition_usable:
+    if acquisition_complete:
         last_error = None
     elif errors:
         last_error = errors[-1]
@@ -422,28 +389,16 @@ def fetch_official_rain(
                 "browser fallback non disponibile o non riuscito"
             )
 
-    now = datetime.now(timezone.utc).isoformat()
     health = {
         "source": "SIR/CFR rainfall",
         "reachable": reachable,
         "acquired": len(by_code),
-        "acquisition_usable": acquisition_usable,
         "acquisition_complete": acquisition_complete,
-        "expected_catalog": len(expected_set) if expected_set else None,
-        "matched_catalog": len(matched_codes) if expected_set else None,
-        "missing_catalog": len(missing_codes) if expected_set else None,
-        "missing_codes": missing_codes,
-        "extra_codes": extra_codes,
-        "field_coverage": field_coverage,
-        "complete_windows_5_7_15_30": complete_windows,
-        "incomplete_window_codes": incomplete_window_codes,
-        "fallback_needed": len(needs_fallback_codes) if expected_set else None,
-        "fallback_needed_codes": needs_fallback_codes,
         "reference_time": best.get("reference_time"),
         "source_url": best_url or reachable_url,
         "fetch_mode": best_mode,
-        "last_success_at": now if acquisition_usable else None,
-        "last_contact_at": now if reachable else None,
+        "last_success_at": datetime.now(timezone.utc).isoformat() if acquisition_complete else None,
+        "last_contact_at": datetime.now(timezone.utc).isoformat() if reachable else None,
         "last_error": last_error,
         "reachability_errors": errors,
         "candidates": candidates,

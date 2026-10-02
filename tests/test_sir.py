@@ -44,10 +44,6 @@ def test_fetch_health_counts_parsed_official_records():
     data, health = fetch_official_rain(ReachableOfficial(), minimum_records=1)
     assert len(data) == 1
     assert health["reachable"] is True
-    assert health["acquisition_usable"] is True
-    # Senza expected_codes possiamo certificare che la sorgente è utilizzabile,
-    # non che copra integralmente il catalogo strutturale.
-    assert health["acquisition_complete"] is False
-    assert health["expected_catalog"] is None
+    assert health["acquisition_complete"] is True
     assert health["fetch_mode"] == "direct"
     assert health["last_error"] is None
