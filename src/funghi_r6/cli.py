@@ -17,6 +17,56 @@ from .open_meteo import fetch_component, daily_rows
 from .sir import fetch_official_rain
 
 
+def _open_meteo_health(
+    component_cache: dict[str, dict[str, dict]],
+    errors: dict[str, list[str]],
+    expected_stations: int,
+) -> dict:
+    # reachable e complete sono volutamente distinti:
+    # una fonte puo essere raggiungibile pur avendo copertura parziale.
+    components = ("current", "forecast", "soil")
+    code_sets = [set((component_cache.get(name) or {}).keys()) for name in components]
+    complete_codes = set.intersection(*code_sets) if code_sets else set()
+
+    records = [
+        rec
+        for name in components
+        for rec in (component_cache.get(name) or {}).values()
+        if isinstance(rec, dict)
+    ]
+    fetched = sorted(
+        str(rec.get("fetched_at"))
+        for rec in records
+        if rec.get("fetched_at")
+    )
+    last_success = fetched[-1] if fetched else None
+
+    relevant_errors = {
+        name: list(errors.get(name) or [])
+        for name in components
+        if errors.get(name)
+    }
+    flat_errors = [
+        f"{name}: {message}"
+        for name, messages in relevant_errors.items()
+        for message in messages
+    ]
+
+    acquired = len(complete_codes)
+    return {
+        "reachable": bool(records),
+        "acquired": acquired,
+        "complete": acquired == expected_stations,
+        "current": len(component_cache.get("current") or {}),
+        "forecast": len(component_cache.get("forecast") or {}),
+        "soil": len(component_cache.get("soil") or {}),
+        "last_success_at": last_success,
+        "last_error": " | ".join(flat_errors)[:2000] if flat_errors else None,
+        "reference_time": last_success,
+        "errors": relevant_errors,
+    }
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Funghi Toscana AI R6 Data Builder")
     p.add_argument("--mode", choices=["bootstrap", "full", "light"], default="full")
@@ -182,19 +232,18 @@ def main() -> int:
     cov = coverage(assembled)
     generated_at = datetime.now(timezone.utc).isoformat()
     generation = f"R6-{target_day}-{datetime.now(timezone.utc).strftime('%H%M%SZ')}"
+    open_meteo_health = _open_meteo_health(
+        component_cache,
+        errors,
+        SETTINGS.expected_stations,
+    )
+    if d1:
+        d1.source_health("open_meteo", open_meteo_health)
+
     sources = {
         "sir_cfr": sir_health,
         "sir_registry": catalog_health,
-        "open_meteo": {
-            "reachable": any(
-                len(component_cache.get(k, {}))
-                for k in ["current", "forecast", "soil"]
-            ),
-            "current": len(component_cache.get("current", {})),
-            "forecast": len(component_cache.get("forecast", {})),
-            "soil": len(component_cache.get("soil", {})),
-            "errors": errors,
-        },
+        "open_meteo": open_meteo_health,
         "radar": {
             "status": "SEPARATE_UNCHANGED",
             "worker": "https://funghi-toscana-radar.porcinitoscanaai.workers.dev",
