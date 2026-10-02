@@ -1,0 +1,72 @@
+name: R6 Data Builder
+
+on:
+  push:
+    branches: [main]
+    paths: ['.r6-bootstrap-request']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "bootstrap = primo backfill; full = mattino; light = infragiornaliero"
+        required: true
+        default: bootstrap
+        type: choice
+        options: [bootstrap, full, light]
+  schedule:
+    - cron: '5 6 * * *'
+      timezone: 'Europe/Rome'
+    - cron: '5 12 * * *'
+      timezone: 'Europe/Rome'
+    - cron: '5 18 * * *'
+      timezone: 'Europe/Rome'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: funghi-toscana-r6-builder
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      R6_EXPECTED_STATIONS: '418'
+      R6_BATCH_SIZE: '12'
+      R6_BATCH_PAUSE_S: '1.5'
+      R6_MAX_RETRIES: '5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install builder
+        run: pip install -e .
+      - name: Resolve mode
+        id: mode
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "value=bootstrap" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.schedule }}" == "5 6 * * *" ]]; then
+            echo "value=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=light" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build scientific snapshot
+        run: python -m funghi_r6.cli --mode "${{ steps.mode.outputs.value }}" --out out
+      - name: Upload R6 audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r6-${{ steps.mode.outputs.value }}-${{ github.run_id }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14

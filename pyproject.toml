@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "funghi-toscana-r6"
+version = "0.1.0"
+description = "External scientific data builder for Funghi Toscana AI R6"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.32,<3"]
+
+[project.scripts]
+funghi-r6 = "funghi_r6.cli:main"
+
+[tool.setuptools.package-data]
+funghi_r6 = ["schema.sql"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
