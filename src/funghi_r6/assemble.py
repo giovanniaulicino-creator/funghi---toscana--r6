@@ -1,3 +1,4 @@
+# R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
@@ -28,6 +29,25 @@ def _window(history: list[dict[str, Any]], days: int, field: str) -> list[Any]:
     rows = sorted(history, key=lambda x: x.get("day") or "")[-days:]
     return [x.get(field) for x in rows]
 
+
+
+
+def _longest_dry_streak(history: list[dict[str, Any]], days: int = 90, dry_threshold_mm: float = 1.0) -> int | None:
+    rows = sorted(history, key=lambda x: x.get("day") or "")[-days:]
+    if not rows:
+        return None
+    best = current = 0
+    for row in rows:
+        rain = _n(row.get("rain_mm"))
+        if rain is None:
+            current = 0
+            continue
+        if rain < dry_threshold_mm:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
 
 def _daily_forecast(item: dict[str, Any], days: int, key: str, target_day: str) -> list[Any]:
     daily = item.get("daily") or {}
@@ -70,6 +90,33 @@ def assemble_station(
             "quality": "official" if off is not None else "model_exact_point",
         }
 
+    # R6.38: memoria idro-climatica coerente. P30 resta l'ancora canonica
+    # SIR/CFR (o il suo fallback R6); le fasce 31-60 e 61-90 provengono
+    # dalla medesima serie Open-Meteo giornaliera e vengono aggiunte, non
+    # confrontate come cumulate di fonti incompatibili.
+    history_sorted = sorted(history, key=lambda x: x.get("day") or "")
+    p30_anchor = rain[30]
+    rain_31_60_mm = _sum([x.get("rain_mm") for x in history_sorted[-60:-30]]) if len(history_sorted) >= 60 else None
+    rain_61_90_mm = _sum([x.get("rain_mm") for x in history_sorted[-90:-60]]) if len(history_sorted) >= 90 else None
+    rain_60d_mm = round(p30_anchor + rain_31_60_mm, 3) if p30_anchor is not None and rain_31_60_mm is not None else None
+    rain_90d_mm = round(rain_60d_mm + rain_61_90_mm, 3) if rain_60d_mm is not None and rain_61_90_mm is not None else None
+
+    et0_7d_mm = _sum(_window(history_sorted, 7, "et0_mm"))
+    et0_15d_mm = _sum(_window(history_sorted, 15, "et0_mm"))
+    et0_30d_mm = _sum(_window(history_sorted, 30, "et0_mm"))
+    et0_60d_mm = _sum(_window(history_sorted, 60, "et0_mm")) if len(history_sorted) >= 60 else None
+    et0_90d_mm = _sum(_window(history_sorted, 90, "et0_mm")) if len(history_sorted) >= 90 else None
+
+    def water_balance(rain_mm, et0_mm):
+        return round(rain_mm - et0_mm, 3) if rain_mm is not None and et0_mm is not None else None
+
+    water_balance_7d_mm = water_balance(rain[7], et0_7d_mm)
+    water_balance_15d_mm = water_balance(rain[15], et0_15d_mm)
+    water_balance_30d_mm = water_balance(p30_anchor, et0_30d_mm)
+    water_balance_60d_mm = water_balance(rain_60d_mm, et0_60d_mm)
+    water_balance_90d_mm = water_balance(rain_90d_mm, et0_90d_mm)
+    longest_dry_streak_90d = _longest_dry_streak(history_sorted, 90)
+
     out = {
         **station,
         "temperature_c": _n(cur.get("temperature_2m")),
@@ -81,10 +128,25 @@ def assemble_station(
         "rain_7d_mm": rain[7],
         "rain_15d_mm": rain[15],
         "rain_30d_mm": rain[30],
+        "rain_60d_mm": rain_60d_mm,
+        "rain_90d_mm": rain_90d_mm,
+        "rain_31_60d_mm": rain_31_60_mm,
+        "rain_61_90d_mm": rain_61_90_mm,
+        "long_term_hydro_source_kind": "r6-p30+open-meteo-31-90d-composite",
         "temperature_mean_30d_c": _mean(_window(history, 30, "temperature_mean_c")),
         "humidity_mean_30d_pct": _mean(_window(history, 30, "humidity_mean_pct")),
         "wind_mean_30d_ms": _mean(_window(history, 30, "wind_mean_ms")),
-        "et0_30d_mm": _sum(_window(history, 30, "et0_mm")),
+        "et0_7d_mm": et0_7d_mm,
+        "et0_15d_mm": et0_15d_mm,
+        "et0_30d_mm": et0_30d_mm,
+        "et0_60d_mm": et0_60d_mm,
+        "et0_90d_mm": et0_90d_mm,
+        "water_balance_7d_mm": water_balance_7d_mm,
+        "water_balance_15d_mm": water_balance_15d_mm,
+        "water_balance_30d_mm": water_balance_30d_mm,
+        "water_balance_60d_mm": water_balance_60d_mm,
+        "water_balance_90d_mm": water_balance_90d_mm,
+        "longest_dry_streak_90d": longest_dry_streak_90d,
         "forecast_precipitation_7d_mm": _sum(_daily_forecast(frc, 7, "precipitation_sum", resolved_target_day)),
         "forecast_precipitation_15d_mm": _sum(_daily_forecast(frc, 15, "precipitation_sum", resolved_target_day)),
         "forecast_temperature_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_mean", resolved_target_day)),
@@ -101,10 +163,15 @@ def assemble_station(
         "soil_temperature_18cm_c": _n(sl.get("soil_temperature_18cm")),
         "vpd_kpa": _n(sl.get("vapour_pressure_deficit")),
         "current_et0_mm": _n(sl.get("evapotranspiration")),
-        "weather_daily_30d": sorted(history, key=lambda x: x.get("day") or "")[-30:],
+        "weather_daily_30d": history_sorted[-30:],
+        "weather_daily_90d": history_sorted[-90:],
         "rain_daily_30d": [
             {"day": x.get("day"), "mm": x.get("rain_mm"), "days_ago": i + 1}
-            for i, x in enumerate(reversed(sorted(history, key=lambda x: x.get("day") or "")[-30:]))
+            for i, x in enumerate(reversed(history_sorted[-30:]))
+        ],
+        "rain_daily_90d": [
+            {"day": x.get("day"), "mm": x.get("rain_mm"), "days_ago": i + 1}
+            for i, x in enumerate(reversed(history_sorted[-90:]))
         ],
         "weather_core_cached_at": now,
         "weather_history_cached_at": now,
@@ -112,6 +179,17 @@ def assemble_station(
         "forecast_15d_cached_at": now,
         "soil_cached_at": now,
         "provenance": provenance,
+    }
+
+    out["provenance"]["rain_60d_mm"] = {
+        "source": "R6 canonical P30 + Open-Meteo exact-point days 31-60",
+        "timestamp": history_sorted[-1].get("day") if history_sorted else None,
+        "quality": "composite_anchor_plus_model_exact_point",
+    }
+    out["provenance"]["rain_90d_mm"] = {
+        "source": "R6 canonical P30 + Open-Meteo exact-point days 31-90",
+        "timestamp": history_sorted[-1].get("day") if history_sorted else None,
+        "quality": "composite_anchor_plus_model_exact_point",
     }
     for key in ["temperature_c", "humidity_pct", "wind_speed_ms"]:
         out["provenance"][key] = {
@@ -136,8 +214,9 @@ def station_complete(s: dict[str, Any]) -> bool:
         "forecast_temperature_mean_7d_c", "forecast_temperature_mean_15d_c",
         "forecast_et0_7d_mm", "forecast_et0_15d_mm",
         "soil_moisture_3_9", "soil_moisture_9_27",
+        "rain_60d_mm", "rain_90d_mm", "water_balance_60d_mm", "water_balance_90d_mm",
     ]
-    return all(_n(s.get(k)) is not None for k in required) and len(s.get("weather_daily_30d") or []) >= 28
+    return all(_n(s.get(k)) is not None for k in required) and len(s.get("weather_daily_90d") or []) >= 88
 
 
 def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
@@ -153,6 +232,10 @@ def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
         "current": count(lambda s: all(numeric(s, k) for k in ["temperature_c", "humidity_pct", "wind_speed_ms"])),
         "rain_5_7_15_30": count(lambda s: all(numeric(s, f"rain_{d}d_mm") for d in [5, 7, 15, 30])),
         "history_30": count(lambda s: len(s.get("weather_daily_30d") or []) >= 28),
+        "history_90": count(lambda s: len(s.get("weather_daily_90d") or []) >= 88),
+        "long_hydro_90": count(lambda s: all(numeric(s, k) for k in ["rain_60d_mm", "rain_90d_mm", "water_balance_60d_mm", "water_balance_90d_mm"])),
+        "copernicus_soil": count(lambda s: numeric(s, "satellite_surface_soil_moisture_pct") or numeric(s, "satellite_soil_water_index_pct")),
+        "vegetation_indices": count(lambda s: any(numeric(s, k) for k in ["ndvi_current", "ndmi_current", "evi_current"])),
         "forecast_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_7d_mm", "forecast_temperature_mean_7d_c", "forecast_et0_7d_mm"])),
         "forecast_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_15d_mm", "forecast_temperature_mean_15d_c", "forecast_et0_15d_mm"])),
         "et0": count(lambda s: all(numeric(s, k) for k in ["et0_30d_mm", "forecast_et0_7d_mm", "forecast_et0_15d_mm"])),

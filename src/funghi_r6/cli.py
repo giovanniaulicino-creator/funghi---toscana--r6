@@ -1,3 +1,4 @@
+# R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
 import argparse
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from .assemble import assemble_station, coverage
 from .catalog import fetch_catalog
+from .copernicus import fetch_copernicus_bundle
 from .config import SETTINGS
 from .d1 import D1
 from .http import HttpClient
@@ -187,15 +189,15 @@ def main() -> int:
 
     if d1 and args.mode != "bootstrap":
         history_start = (
-            date.fromisoformat(target_day) - timedelta(days=40)
+            date.fromisoformat(target_day) - timedelta(days=100)
         ).isoformat()
-        history_by_code = d1.load_history_map(history_start, 35)
+        history_by_code = d1.load_history_map(history_start, 95)
 
         # Self-healing: se il D1 e nuovo o qualche storico e' incompleto,
         # recupera 35 giorni solo per le stazioni necessarie.
         deficient = [
             s for s in stations
-            if len(history_by_code.get(s["code"]) or []) < 28
+            if len(history_by_code.get(s["code"]) or []) < 88
         ]
         if deficient:
             recovery_cycle = f"{cycle_key}-history-recovery"
@@ -212,22 +214,103 @@ def main() -> int:
             for code, rec in recs.items():
                 rows = daily_rows(code, rec["payload"])
                 d1.persist_daily(rows)
-            history_by_code = d1.load_history_map(history_start, 35)
+            history_by_code = d1.load_history_map(history_start, 95)
+
+    # R6.38 — Copernicus indipendente, fail-soft e cache giornaliera D1.
+    # La mancanza di credenziali o di pixel validi NON blocca ACTIVE: viene
+    # registrata in source_health e il modello riduce l'affidabilita' locale.
+    copernicus_cache: dict[str, dict] = {}
+    copernicus_cycle = f"{target_day}-copernicus-r638"
+    if d1:
+        copernicus_cache = d1.load_component_map("copernicus", copernicus_cycle)
+    if len(copernicus_cache) == SETTINGS.expected_stations:
+        copernicus_health = {
+            "status": "CACHE", "configured": True, "reachable": True,
+            "acquired": len(copernicus_cache), "expected": SETTINGS.expected_stations,
+            "complete": True, "last_success_at": max(
+                (str(x.get("fetched_at")) for x in copernicus_cache.values() if x.get("fetched_at")),
+                default=None,
+            ),
+            "last_error": None, "reference_time": target_day,
+            "note": "Copernicus R6.38 riusato dalla cache D1 giornaliera.",
+        }
+    else:
+        cached_payloads = {
+            code: (rec.get("payload") or {})
+            for code, rec in copernicus_cache.items()
+            if isinstance(rec, dict)
+        }
+        missing_stations = [s for s in stations if s["code"] not in cached_payloads]
+        fresh_payloads, copernicus_health = fetch_copernicus_bundle(missing_stations)
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        fresh_rows = []
+        configured = copernicus_health.get("configured") is True
+        for station in missing_stations:
+            code = station["code"]
+            payload = fresh_payloads.get(code) or {}
+            cached_payloads[code] = payload
+            # Se il client e' configurato, memorizziamo anche l'esito vuoto di una
+            # cella senza pixel validi per non martellare l'API nello stesso giorno.
+            # Se mancano le credenziali, invece, non creiamo una falsa cache completa.
+            if configured:
+                fresh_rows.append({
+                    "code": code, "component": "copernicus",
+                    "fetched_at": fetched_at, "cycle_key": copernicus_cycle,
+                    "payload": payload,
+                })
+        if d1 and fresh_rows:
+            d1.persist_component_batch("copernicus", fresh_rows)
+            copernicus_cache = d1.load_component_map("copernicus", copernicus_cycle)
+        else:
+            copernicus_cache = {
+                code: {"code": code, "component": "copernicus", "fetched_at": fetched_at, "cycle_key": copernicus_cycle, "payload": payload}
+                for code, payload in cached_payloads.items()
+            }
+        total_payloads = [(rec.get("payload") or {}) for rec in copernicus_cache.values() if isinstance(rec, dict)]
+        nonempty = sum(1 for payload in total_payloads if payload)
+        soil_count = sum(1 for payload in total_payloads if payload.get("satellite_surface_soil_moisture_pct") is not None or payload.get("satellite_soil_water_index_pct") is not None)
+        veg_count = sum(1 for payload in total_payloads if payload.get("ndvi_current") is not None or payload.get("ndmi_current") is not None or payload.get("evi_current") is not None)
+        copernicus_health.update({
+            "acquired": nonempty, "expected": SETTINGS.expected_stations,
+            "complete": nonempty == SETTINGS.expected_stations,
+            "soil_acquired": soil_count, "vegetation_acquired": veg_count,
+        })
+    if d1:
+        d1.source_health("copernicus", copernicus_health)
 
     assembled: list[dict] = []
     for station in stations:
         code = station["code"]
-        assembled.append(
-            assemble_station(
-                station,
-                official_rain=official_rain.get(code),
-                current=(component_cache.get("current", {}).get(code) or {}).get("payload"),
-                forecast=(component_cache.get("forecast", {}).get(code) or {}).get("payload"),
-                soil=(component_cache.get("soil", {}).get(code) or {}).get("payload"),
-                history=history_by_code.get(code) or [],
-                target_day=target_day,
-            )
+        station_out = assemble_station(
+            station,
+            official_rain=official_rain.get(code),
+            current=(component_cache.get("current", {}).get(code) or {}).get("payload"),
+            forecast=(component_cache.get("forecast", {}).get(code) or {}).get("payload"),
+            soil=(component_cache.get("soil", {}).get(code) or {}).get("payload"),
+            history=history_by_code.get(code) or [],
+            target_day=target_day,
         )
+        cop_payload = (copernicus_cache.get(code) or {}).get("payload") or {}
+        if cop_payload:
+            station_out.update(cop_payload)
+            prov = station_out.setdefault("provenance", {})
+            for key in (
+                "satellite_surface_soil_moisture_pct", "satellite_soil_water_index_pct",
+                "ndvi_current", "ndmi_current", "evi_current",
+            ):
+                if station_out.get(key) is not None:
+                    prov[key] = {
+                        "source": station_out.get("copernicus_soil_source_kind")
+                            if key.startswith("satellite_")
+                            else station_out.get("vegetation_indices_source_kind"),
+                        "timestamp": station_out.get("copernicus_ssm_observed_at")
+                            if key == "satellite_surface_soil_moisture_pct"
+                            else station_out.get("copernicus_swi_observed_at")
+                            if key == "satellite_soil_water_index_pct"
+                            else station_out.get("vegetation_indices_window_end"),
+                        "quality": "independent_satellite_observation",
+                    }
+        assembled.append(station_out)
 
     cov = coverage(assembled)
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -244,6 +327,7 @@ def main() -> int:
         "sir_cfr": sir_health,
         "sir_registry": catalog_health,
         "open_meteo": open_meteo_health,
+        "copernicus": copernicus_health,
         "radar": {
             "status": "SEPARATE_UNCHANGED",
             "worker": "https://funghi-toscana-radar.porcinitoscanaai.workers.dev",
@@ -255,7 +339,8 @@ def main() -> int:
             "structural",
             "current",
             "rain_5_7_15_30",
-            "history_30",
+            "history_90",
+            "long_hydro_90",
             "forecast_7",
             "forecast_15",
             "et0",

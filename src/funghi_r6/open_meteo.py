@@ -1,3 +1,4 @@
+# R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
 from datetime import date, timedelta, datetime, timezone
@@ -67,7 +68,7 @@ def fetch_component(
             elif component == "history_bootstrap":
                 local_day = datetime.now(ZoneInfo("Europe/Rome")).date()
                 end = local_day - timedelta(days=1)
-                start = end - timedelta(days=34)
+                start = end - timedelta(days=99)
                 params.update({"start_date": start.isoformat(), "end_date": end.isoformat(), "daily": ARCHIVE_DAILY_VARS})
                 payload = http.get_json(ARCHIVE_URL, params=params)
             else:
