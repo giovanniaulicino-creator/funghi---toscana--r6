@@ -1,3 +1,4 @@
+# R6382C-COPERNICUS-RUNTIME-FIX-2026-10-04
 # R6381-COPERNICUS-FIX-2026-10-04
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,16 +28,24 @@ function evaluatePixel(s){if(!s.dataMask)return [255,255,0];return [s.SWI040,s.Q
 """
 S2_INDEX_EVALSCRIPT=r"""
 //VERSION=3
-function setup(){return {input:[{bands:["B02","B04","B08","B11","SCL","dataMask"]}],output:[
-{id:"indices",bands:[{name:"NDVI"},{name:"NDMI"},{name:"EVI"}],sampleType:"FLOAT32"},
-{id:"dataMask",bands:1,sampleType:"UINT8"}]};}
-function evaluatePixel(s){
- var bad=[0,1,3,8,9,10,11].indexOf(s.SCL)>=0;
- var valid=s.dataMask&&!bad?1:0;
- var ndvi=(s.B08-s.B04)/(s.B08+s.B04+1e-6);
- var ndmi=(s.B08-s.B11)/(s.B08+s.B11+1e-6);
- var evi=2.5*(s.B08-s.B04)/(s.B08+6*s.B04-7.5*s.B02+1.0+1e-6);
- return {indices:[ndvi,ndmi,evi],dataMask:[valid]};
+function setup() {
+  return {
+    input:[{bands:["B02","B04","B08","B11","SCL","dataMask"]}],
+    output:[
+      {id:"ndvi",bands:1,sampleType:"FLOAT32"},
+      {id:"ndmi",bands:1,sampleType:"FLOAT32"},
+      {id:"evi",bands:1,sampleType:"FLOAT32"},
+      {id:"dataMask",bands:1}
+    ]
+  };
+}
+function evaluatePixel(s) {
+  var bad=[0,1,3,8,9,10,11].indexOf(s.SCL)>=0;
+  var valid=s.dataMask&&!bad?1:0;
+  var ndvi=(s.B08-s.B04)/(s.B08+s.B04+1e-6);
+  var ndmi=(s.B08-s.B11)/(s.B08+s.B11+1e-6);
+  var evi=2.5*(s.B08-s.B04)/(s.B08+6*s.B04-7.5*s.B02+1.0+1e-6);
+  return {ndvi:[ndvi],ndmi:[ndmi],evi:[evi],dataMask:[valid]};
 }
 """
 
@@ -128,22 +137,25 @@ def _fill_clms(sess,token,stations,bbox,width,height,collection,script,value_fie
     if not dates: errors.append(f"{label}: nessuna acquisizione recente")
     return out,dates[:max_dates],errors
 
-def _bbox_around(lat,lon,radius_m=120):
+def _bbox_around(lat,lon,radius_m=250):
     dlat=radius_m/111320
     dlon=radius_m/(111320*max(.25,math.cos(math.radians(lat))))
     return [lon-dlon,lat-dlat,lon+dlon,lat+dlat]
 
-def _stats_mean(payload,band):
+def _stats_mean(payload,output_id):
     try:
         entries=payload.get("data") or []
-        bands=(((entries[-1] or {}).get("outputs") or {}).get("indices") or {}).get("bands") or {}
-        st=(bands.get(band) or {}).get("stats") or {}
+        outputs=(entries[-1] or {}).get("outputs") or {}
+        bands=((outputs.get(output_id) or {}).get("bands") or {})
+        st=(bands.get("B0") or {}).get("stats") or {}
         m=st.get("mean"); sample=st.get("sampleCount"); nodata=st.get("noDataCount")
         v=float(m) if m is not None and math.isfinite(float(m)) else None
         q=None
-        if sample is not None and float(sample)>0:q=max(0,min(100,(float(sample)-float(nodata or 0))/float(sample)*100))
+        if sample is not None and float(sample)>0:
+            q=max(0,min(100,(float(sample)-float(nodata or 0))/float(sample)*100))
         return v,q
-    except Exception:return None,None
+    except Exception:
+        return None,None
 
 def _rate_wait(interval):
     global _next_request_at
@@ -174,11 +186,11 @@ def _s2(token,st,days=16):
     code=str(st.get("code") or ""); lat=float(st["lat"]); lon=float(st["lon"])
     end=datetime.now(timezone.utc); start=end-timedelta(days=days)
     body={"input":{"bounds":{"bbox":_bbox_around(lat,lon),"properties":{"crs":"http://www.opengis.net/def/crs/OGC/1.3/CRS84"}},
-      "data":[{"type":"sentinel-2-l2a","dataFilter":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"maxCloudCoverage":80,"mosaickingOrder":"leastCC"}}]},
-      "aggregation":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"aggregationInterval":{"of":f"P{days}D"},"resx":20,"resy":20,"evalscript":S2_INDEX_EVALSCRIPT}}
+      "data":[{"type":"sentinel-2-l2a","dataFilter":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"maxCloudCoverage":90,"mosaickingOrder":"leastCC"}}]},
+      "aggregation":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"aggregationInterval":{"of":f"P{days}D"},"width":16,"height":16,"evalscript":S2_INDEX_EVALSCRIPT}}
     try:
         p=_stats_post(token,body,4,max(.25,float(os.getenv("COPERNICUS_VEG_MIN_INTERVAL_S") or ".75")))
-        ndvi,q1=_stats_mean(p,"NDVI"); ndmi,q2=_stats_mean(p,"NDMI"); evi,q3=_stats_mean(p,"EVI")
+        ndvi,q1=_stats_mean(p,"ndvi"); ndmi,q2=_stats_mean(p,"ndmi"); evi,q3=_stats_mean(p,"evi")
         qs=[x for x in (q1,q2,q3) if x is not None]
         out={"ndvi_current":round(ndvi,4) if ndvi is not None else None,
              "ndmi_current":round(ndmi,4) if ndmi is not None else None,
