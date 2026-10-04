@@ -1,3 +1,4 @@
+# R6382D-BOUNDED-SENTINEL-SWI-V2-2026-10-04
 # R6382C-COPERNICUS-RUNTIME-FIX-2026-10-04
 # R6381-COPERNICUS-FIX-2026-10-04
 from __future__ import annotations
@@ -14,7 +15,7 @@ PROCESS_URL="https://sh.dataspace.copernicus.eu/api/v1/process"
 CATALOG_URL="https://sh.dataspace.copernicus.eu/catalog/v1/search"
 STATS_URL="https://sh.dataspace.copernicus.eu/statistics/v1"
 SSM_COLLECTION="df9e9783-f580-433a-b798-3acd2760b94e"
-SWI_COLLECTION="bd02588b-7236-4b1e-9480-aeae7dce3c7a"
+SWI_COLLECTION="4bd995a1-dc49-4176-a285-b1d0084ba51a"
 
 SSM_EVALSCRIPT=r"""
 //VERSION=3
@@ -100,7 +101,7 @@ def _process_day(sess,token,collection,bbox,width,height,obs,script):
       "processing":{"upsampling":"NEAREST","downsampling":"NEAREST"}}]},
       "output":{"width":width,"height":height,"responses":[{"identifier":"default","format":{"type":"image/tiff"}}]},
       "evalscript":script}
-    r=sess.post(PROCESS_URL,headers={"Authorization":f"Bearer {token}","Content-Type":"application/json","Accept":"image/tiff"},json=body,timeout=120)
+    r=sess.post(PROCESS_URL,headers={"Authorization":f"Bearer {token}","Content-Type":"application/json","Accept":"image/tiff"},json=body,timeout=(10,45))
     if r.status_code>=400: raise RuntimeError(f"process HTTP {r.status_code}: {r.text[:1200]}")
     img=Image.open(BytesIO(r.content)); img.load(); return img.convert("RGB")
 
@@ -134,7 +135,9 @@ def _fill_clms(sess,token,stations,bbox,width,height,collection,script,value_fie
             out[code]={value_field:v,quality_field:_pct(p[1],p[2]),obs_field:obs}
             del pending[code]; gained+=1
         print(f"[R6.38.1] {label} {i}/{min(len(dates),max_dates)} {obs[:10]} +{gained} copertura {len(out)}/{len(stations)}",flush=True)
-    if not dates: errors.append(f"{label}: nessuna acquisizione recente")
+    if not dates:
+        errors.append(f"{label}: nessuna acquisizione recente")
+        print(f"[R6.38.2D] {label}: catalogo senza acquisizioni nel lookback",flush=True)
     return out,dates[:max_dates],errors
 
 def _bbox_around(lat,lon,radius_m=250):
@@ -163,23 +166,41 @@ def _rate_wait(interval):
         now=time.monotonic(); slot=max(now,_next_request_at); _next_request_at=slot+interval
     if slot>now: time.sleep(slot-now)
 
-def _stats_post(token,body,retries=4,interval=.75):
+def _stats_post(token,body,retries=None,interval=None):
+    retries=max(1,min(3,int(retries if retries is not None else (os.getenv("COPERNICUS_VEG_RETRIES") or "2"))))
+    interval=max(.25,float(interval if interval is not None else (os.getenv("COPERNICUS_VEG_MIN_INTERVAL_S") or ".75")))
+    connect_timeout=max(3.0,float(os.getenv("COPERNICUS_VEG_CONNECT_TIMEOUT_S") or "8"))
+    read_timeout=max(8.0,float(os.getenv("COPERNICUS_VEG_READ_TIMEOUT_S") or "20"))
+    max_backoff=max(2.0,float(os.getenv("COPERNICUS_VEG_MAX_BACKOFF_S") or "12"))
     last=None
     for a in range(1,retries+1):
         _rate_wait(interval)
         try:
-            r=requests.post(STATS_URL,headers={"Authorization":f"Bearer {token}","Content-Type":"application/json","Accept":"application/json"},json=body,timeout=75)
+            r=requests.post(
+                STATS_URL,
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json","Accept":"application/json"},
+                json=body,
+                timeout=(connect_timeout,read_timeout),
+            )
             if r.status_code==429 or 500<=r.status_code<=599:
                 ra=r.headers.get("Retry-After")
-                delay=float(ra) if ra and ra.replace(".","",1).isdigit() else min(30,2*2**(a-1))
+                try:
+                    delay=float(ra) if ra is not None else 2*2**(a-1)
+                except Exception:
+                    delay=2*2**(a-1)
+                delay=max(1.0,min(max_backoff,delay))
                 last=RuntimeError(f"HTTP {r.status_code}: {r.text[:1000]}")
-                if a<retries: time.sleep(delay); continue
+                if a<retries:
+                    time.sleep(delay)
+                    continue
                 raise last
-            if r.status_code>=400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:1500]}")
+            if r.status_code>=400:
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:1500]}")
             return r.json() or {}
         except Exception as e:
             last=e
-            if a<retries: time.sleep(min(20,1.5*2**(a-1)))
+            if a<retries:
+                time.sleep(min(max_backoff,1.5*2**(a-1)))
     raise RuntimeError(str(last))
 
 def _s2(token,st,days=16):
@@ -189,7 +210,7 @@ def _s2(token,st,days=16):
       "data":[{"type":"sentinel-2-l2a","dataFilter":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"maxCloudCoverage":90,"mosaickingOrder":"leastCC"}}]},
       "aggregation":{"timeRange":{"from":_iso_z(start),"to":_iso_z(end)},"aggregationInterval":{"of":f"P{days}D"},"width":16,"height":16,"evalscript":S2_INDEX_EVALSCRIPT}}
     try:
-        p=_stats_post(token,body,4,max(.25,float(os.getenv("COPERNICUS_VEG_MIN_INTERVAL_S") or ".75")))
+        p=_stats_post(token,body)
         ndvi,q1=_stats_mean(p,"ndvi"); ndmi,q2=_stats_mean(p,"ndmi"); evi,q3=_stats_mean(p,"evi")
         qs=[x for x in (q1,q2,q3) if x is not None]
         out={"ndvi_current":round(ndvi,4) if ndvi is not None else None,
@@ -242,8 +263,11 @@ def fetch_copernicus_bundle(stations,client_id=None,client_secret=None):
           "acquired":len(out),"expected":expected,"complete":len(out)==expected,"ssm_acquired":ssmc,"swi_acquired":swic,
           "soil_acquired":sum(1 for r in out.values() if r.get("satellite_surface_soil_moisture_pct") is not None or r.get("satellite_soil_water_index_pct") is not None),"vegetation_acquired":veg,"last_success_at":fetched if out else None,
           "last_error":" | ".join(errors)[:4000] if errors else None,"error_counts":counts,
-          "products":{"ssm":{"catalog_dates_used":ssmd},"swi040":{"catalog_dates_used":swid},
-          "sentinel2_indices":{"statistics_endpoint":STATS_URL,"workers":workers,"window_days":days}}}
+          "products":{"ssm":{"catalog_dates_used":ssmd},"swi040":{"catalog_dates_used":swid,"collection_id":SWI_COLLECTION},
+          "sentinel2_indices":{"statistics_endpoint":STATS_URL,"workers":workers,"window_days":days,
+          "retries":max(1,min(3,int(os.getenv("COPERNICUS_VEG_RETRIES") or "2"))),
+          "connect_timeout_s":max(3.0,float(os.getenv("COPERNICUS_VEG_CONNECT_TIMEOUT_S") or "8")),
+          "read_timeout_s":max(8.0,float(os.getenv("COPERNICUS_VEG_READ_TIMEOUT_S") or "20"))}}}
     except Exception as e:
         return {},{"status":"ERROR","configured":True,"reachable":False,"acquired":0,"expected":expected,"complete":False,"last_error":str(e)[:4000]}
     finally:sess.close()

@@ -1,4 +1,4 @@
-name: R6 Copernicus Runtime Probe C
+name: R6 Copernicus Runtime Probe D
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 12
     env:
       CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
       CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
@@ -19,6 +19,10 @@ jobs:
       COPERNICUS_VEG_WORKERS: '2'
       COPERNICUS_VEG_MIN_INTERVAL_S: '0.75'
       COPERNICUS_VEG_WINDOW_DAYS: '16'
+      COPERNICUS_VEG_RETRIES: '2'
+      COPERNICUS_VEG_CONNECT_TIMEOUT_S: '8'
+      COPERNICUS_VEG_READ_TIMEOUT_S: '20'
+      COPERNICUS_VEG_MAX_BACKOFF_S: '12'
       R6_EXPECTED_STATIONS: '418'
       R6_MAX_RETRIES: '3'
 
@@ -32,14 +36,14 @@ jobs:
       - name: Install builder
         run: pip install -e .
 
-      - name: Copernicus runtime probe C
+      - name: Copernicus runtime probe D
         run: python -m funghi_r6.copernicus_runtime_probe
 
       - name: Upload runtime probe artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: r6382c-copernicus-runtime-${{ github.run_id }}
+          name: r6382d-copernicus-runtime-${{ github.run_id }}
           path: out/
           if-no-files-found: warn
           retention-days: 14
