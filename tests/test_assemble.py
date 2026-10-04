@@ -3,8 +3,8 @@ from funghi_r6.assemble import assemble_station, coverage
 
 
 def _daily():
-    start = date.today() - timedelta(days=34)
-    return [{"code":"TOS1","day":(start+timedelta(days=i)).isoformat(),"rain_mm":1,"temperature_mean_c":15,"humidity_mean_pct":80,"wind_mean_ms":2,"et0_mm":1} for i in range(35)]
+    start = date.today() - timedelta(days=89)
+    return [{"code":"TOS1","day":(start+timedelta(days=i)).isoformat(),"rain_mm":1,"temperature_mean_c":15,"humidity_mean_pct":80,"wind_mean_ms":2,"et0_mm":1} for i in range(90)]
 
 
 def _forecast():
