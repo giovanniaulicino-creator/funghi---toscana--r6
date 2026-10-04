@@ -1,3 +1,4 @@
+# R6381-COPERNICUS-FIX-2026-10-04
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
@@ -216,67 +217,48 @@ def main() -> int:
                 d1.persist_daily(rows)
             history_by_code = d1.load_history_map(history_start, 95)
 
-    # R6.38 — Copernicus indipendente, fail-soft e cache giornaliera D1.
-    # La mancanza di credenziali o di pixel validi NON blocca ACTIVE: viene
-    # registrata in source_health e il modello riduce l'affidabilita' locale.
-    copernicus_cache: dict[str, dict] = {}
-    copernicus_cycle = f"{target_day}-copernicus-r638"
-    if d1:
-        copernicus_cache = d1.load_component_map("copernicus", copernicus_cycle)
-    if len(copernicus_cache) == SETTINGS.expected_stations:
-        copernicus_health = {
-            "status": "CACHE", "configured": True, "reachable": True,
-            "acquired": len(copernicus_cache), "expected": SETTINGS.expected_stations,
-            "complete": True, "last_success_at": max(
-                (str(x.get("fetched_at")) for x in copernicus_cache.values() if x.get("fetched_at")),
-                default=None,
-            ),
-            "last_error": None, "reference_time": target_day,
-            "note": "Copernicus R6.38 riusato dalla cache D1 giornaliera.",
-        }
-    else:
-        cached_payloads = {
-            code: (rec.get("payload") or {})
-            for code, rec in copernicus_cache.items()
-            if isinstance(rec, dict)
-        }
-        missing_stations = [s for s in stations if s["code"] not in cached_payloads]
+    # R6.38.1 — Copernicus: invalida la cache vuota R6.38 e non memorizza payload vuoti.
+    copernicus_cycle = f"{target_day}-copernicus-r6381"
+    copernicus_cache: dict[str, dict] = d1.load_component_map("copernicus", copernicus_cycle) if d1 else {}
+    cached_payloads = {
+        code: (rec.get("payload") or {}) for code, rec in copernicus_cache.items()
+        if isinstance(rec, dict) and (rec.get("payload") or {})
+    }
+    missing_stations = [s for s in stations if s["code"] not in cached_payloads]
+    if missing_stations:
         fresh_payloads, copernicus_health = fetch_copernicus_bundle(missing_stations)
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        fresh_rows = []
-        configured = copernicus_health.get("configured") is True
-        for station in missing_stations:
-            code = station["code"]
-            payload = fresh_payloads.get(code) or {}
-            cached_payloads[code] = payload
-            # Se il client e' configurato, memorizziamo anche l'esito vuoto di una
-            # cella senza pixel validi per non martellare l'API nello stesso giorno.
-            # Se mancano le credenziali, invece, non creiamo una falsa cache completa.
-            if configured:
-                fresh_rows.append({
-                    "code": code, "component": "copernicus",
-                    "fetched_at": fetched_at, "cycle_key": copernicus_cycle,
-                    "payload": payload,
-                })
-        if d1 and fresh_rows:
-            d1.persist_component_batch("copernicus", fresh_rows)
-            copernicus_cache = d1.load_component_map("copernicus", copernicus_cycle)
-        else:
-            copernicus_cache = {
-                code: {"code": code, "component": "copernicus", "fetched_at": fetched_at, "cycle_key": copernicus_cycle, "payload": payload}
-                for code, payload in cached_payloads.items()
-            }
-        total_payloads = [(rec.get("payload") or {}) for rec in copernicus_cache.values() if isinstance(rec, dict)]
-        nonempty = sum(1 for payload in total_payloads if payload)
-        soil_count = sum(1 for payload in total_payloads if payload.get("satellite_surface_soil_moisture_pct") is not None or payload.get("satellite_soil_water_index_pct") is not None)
-        veg_count = sum(1 for payload in total_payloads if payload.get("ndvi_current") is not None or payload.get("ndmi_current") is not None or payload.get("evi_current") is not None)
-        copernicus_health.update({
-            "acquired": nonempty, "expected": SETTINGS.expected_stations,
-            "complete": nonempty == SETTINGS.expected_stations,
-            "soil_acquired": soil_count, "vegetation_acquired": veg_count,
-        })
+    else:
+        fresh_payloads = {}
+        copernicus_health = {"status":"CACHE","configured":True,"reachable":True,"acquired":len(cached_payloads),
+            "expected":SETTINGS.expected_stations,"complete":len(cached_payloads)==SETTINGS.expected_stations,
+            "last_success_at":None,"last_error":None,"reference_time":target_day}
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    fresh_rows=[]
+    for station in missing_stations:
+        code=station["code"]; payload=fresh_payloads.get(code) or {}
+        if not payload:
+            continue
+        cached_payloads[code]=payload
+        fresh_rows.append({"code":code,"component":"copernicus","fetched_at":fetched_at,"cycle_key":copernicus_cycle,"payload":payload})
+    if d1 and fresh_rows:
+        d1.persist_component_batch("copernicus", fresh_rows)
+        stored=d1.load_component_map("copernicus",copernicus_cycle)
+        copernicus_cache={code:rec for code,rec in stored.items() if isinstance(rec,dict) and (rec.get("payload") or {})}
+    else:
+        copernicus_cache={code:{"code":code,"component":"copernicus","fetched_at":fetched_at,"cycle_key":copernicus_cycle,"payload":payload}
+                          for code,payload in cached_payloads.items() if payload}
+    total_payloads=[(rec.get("payload") or {}) for rec in copernicus_cache.values() if isinstance(rec,dict) and (rec.get("payload") or {})]
+    copernicus_health.update({
+        "acquired":len(total_payloads),"expected":SETTINGS.expected_stations,
+        "complete":len(total_payloads)==SETTINGS.expected_stations,
+        "ssm_acquired":sum(p.get("satellite_surface_soil_moisture_pct") is not None for p in total_payloads),
+        "swi_acquired":sum(p.get("satellite_soil_water_index_pct") is not None for p in total_payloads),
+        "soil_acquired":sum(p.get("satellite_surface_soil_moisture_pct") is not None or p.get("satellite_soil_water_index_pct") is not None for p in total_payloads),
+        "vegetation_acquired":sum(p.get("ndvi_current") is not None or p.get("ndmi_current") is not None or p.get("evi_current") is not None for p in total_payloads),
+        "cache_cycle":copernicus_cycle,
+    })
     if d1:
-        d1.source_health("copernicus", copernicus_health)
+        d1.source_health("copernicus",copernicus_health)
 
     assembled: list[dict] = []
     for station in stations:
