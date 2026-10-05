@@ -1,3 +1,4 @@
+# R6402-FORECAST-TARGET-WINDOW-2026-10-05
 # R6401-FORECAST-TIMING-BUCKETS-2026-10-05
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
@@ -164,6 +165,22 @@ def assemble_station(
     def fpop(start_day: int, end_day: int) -> float | None:
         return _probability_mean(_daily_forecast_slice(frc, start_day, end_day, "precipitation_probability_max", resolved_target_day))
 
+    def fmean(start_day: int, end_day: int, key: str) -> float | None:
+        return _mean(_daily_forecast_slice(frc, start_day, end_day, key, resolved_target_day))
+
+    def fvalid(start_day: int, end_day: int, key: str) -> int:
+        return _valid_count(_daily_forecast_slice(frc, start_day, end_day, key, resolved_target_day))
+
+    def fdiurnal(start_day: int, end_day: int) -> float | None:
+        mins = _daily_forecast_slice(frc, start_day, end_day, "temperature_2m_min", resolved_target_day)
+        maxs = _daily_forecast_slice(frc, start_day, end_day, "temperature_2m_max", resolved_target_day)
+        vals = []
+        for lo, hi in zip(mins, maxs):
+            a, b = _n(lo), _n(hi)
+            if a is not None and b is not None:
+                vals.append(max(0, b - a))
+        return _mean(vals)
+
     qpf_7 = _sum(f_rain_7)
     qpf_15 = _sum(f_rain_15)
     pop_mean_7 = _probability_mean(f_pop_7)
@@ -236,6 +253,36 @@ def assemble_station(
         "forecast_precipitation_days8_15_mm": fsum(8, 15),
         "forecast_precipitation_source_kind": "r6-open-meteo-forecast-daily-buckets",
         "forecast_source_kind": "r6-open-meteo-forecast-daily-buckets",
+        # R6.40.2 — clima vicino al giorno obiettivo: +7 usa giorni 5–7,
+        # +15 usa giorni 12–15. QPF ed ET0 cumulativi restano separati.
+        "forecast_temperature_max_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_max", resolved_target_day)),
+        "forecast_temperature_max_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_max", resolved_target_day)),
+        "forecast_humidity_max_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_max", resolved_target_day)),
+        "forecast_humidity_max_mean_15d_pct": _mean(_daily_forecast(frc, 15, "relative_humidity_2m_max", resolved_target_day)),
+        "forecast_wind_gust_mean_7d_ms": _mean(_daily_forecast(frc, 7, "wind_gusts_10m_mean", resolved_target_day)),
+        "forecast_wind_gust_mean_15d_ms": _mean(_daily_forecast(frc, 15, "wind_gusts_10m_mean", resolved_target_day)),
+        "forecast_vpd_max_mean_7d_kpa": _mean(_daily_forecast(frc, 7, "vapour_pressure_deficit_max", resolved_target_day)),
+        "forecast_vpd_max_mean_15d_kpa": _mean(_daily_forecast(frc, 15, "vapour_pressure_deficit_max", resolved_target_day)),
+        "forecast_diurnal_temperature_range_mean_7d_c": fdiurnal(1, 7),
+        "forecast_diurnal_temperature_range_mean_15d_c": fdiurnal(1, 15),
+        "forecast_temperature_target_7d_c": fmean(5, 7, "temperature_2m_mean"),
+        "forecast_temperature_max_target_7d_c": fmean(5, 7, "temperature_2m_max"),
+        "forecast_humidity_target_7d_pct": fmean(5, 7, "relative_humidity_2m_mean"),
+        "forecast_humidity_max_target_7d_pct": fmean(5, 7, "relative_humidity_2m_max"),
+        "forecast_wind_target_7d_ms": fmean(5, 7, "wind_speed_10m_mean"),
+        "forecast_wind_gust_target_7d_ms": fmean(5, 7, "wind_gusts_10m_mean"),
+        "forecast_vpd_max_target_7d_kpa": fmean(5, 7, "vapour_pressure_deficit_max"),
+        "forecast_diurnal_temperature_range_target_7d_c": fdiurnal(5, 7),
+        "forecast_target_window_7d_valid_days": fvalid(5, 7, "temperature_2m_mean"),
+        "forecast_temperature_target_15d_c": fmean(12, 15, "temperature_2m_mean"),
+        "forecast_temperature_max_target_15d_c": fmean(12, 15, "temperature_2m_max"),
+        "forecast_humidity_target_15d_pct": fmean(12, 15, "relative_humidity_2m_mean"),
+        "forecast_humidity_max_target_15d_pct": fmean(12, 15, "relative_humidity_2m_max"),
+        "forecast_wind_target_15d_ms": fmean(12, 15, "wind_speed_10m_mean"),
+        "forecast_wind_gust_target_15d_ms": fmean(12, 15, "wind_gusts_10m_mean"),
+        "forecast_vpd_max_target_15d_kpa": fmean(12, 15, "vapour_pressure_deficit_max"),
+        "forecast_diurnal_temperature_range_target_15d_c": fdiurnal(12, 15),
+        "forecast_target_window_15d_valid_days": fvalid(12, 15, "temperature_2m_mean"),
         "forecast_temperature_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_mean", resolved_target_day)),
         "forecast_temperature_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_mean", resolved_target_day)),
         "forecast_humidity_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_mean", resolved_target_day)),
