@@ -1,3 +1,4 @@
+# R6401-FORECAST-TIMING-BUCKETS-2026-10-05
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
@@ -61,6 +62,36 @@ def _daily_forecast(item: dict[str, Any], days: int, key: str, target_day: str) 
     return [v for _, v in pairs[:days]]
 
 
+
+
+def _daily_forecast_slice(item: dict[str, Any], start_day: int, end_day: int, key: str, target_day: str) -> list[Any]:
+    """Return forecast values for 1-based future-day interval, excluding target_day itself."""
+    daily = item.get("daily") or {}
+    dates = list(daily.get("time") or [])
+    values = list(daily.get(key) or [])
+    pairs = [
+        (str(d), values[i] if i < len(values) else None)
+        for i, d in enumerate(dates)
+        if str(d) > target_day
+    ]
+    lo = max(0, int(start_day) - 1)
+    hi = max(lo, int(end_day))
+    return [v for _, v in pairs[lo:hi]]
+
+
+def _valid_count(values: list[Any]) -> int:
+    return sum(1 for v in values if _n(v) is not None)
+
+
+def _probability_mean(values: list[Any]) -> float | None:
+    return _mean(values)
+
+
+def _probability_max(values: list[Any]) -> float | None:
+    xs = [_n(v) for v in values]
+    ys = [x for x in xs if x is not None]
+    return round(max(ys), 3) if ys else None
+
 def assemble_station(
     station: dict[str, Any],
     *,
@@ -117,6 +148,29 @@ def assemble_station(
     water_balance_90d_mm = water_balance(rain_90d_mm, et0_90d_mm)
     longest_dry_streak_90d = _longest_dry_streak(history_sorted, 90)
 
+
+    # R6.40.1 — timing reale della QPF. Le cumulate 7/15 giorni restano, ma
+    # vengono affiancate da bande non sovrapposte che consentono al modello
+    # micologico di distinguere "piove domani" da "piove a fine finestra".
+    # La probabilità è la media dei PoP massimi giornalieri Open-Meteo nella banda.
+    f_rain_7 = _daily_forecast(frc, 7, "precipitation_sum", resolved_target_day)
+    f_rain_15 = _daily_forecast(frc, 15, "precipitation_sum", resolved_target_day)
+    f_pop_7 = _daily_forecast(frc, 7, "precipitation_probability_max", resolved_target_day)
+    f_pop_15 = _daily_forecast(frc, 15, "precipitation_probability_max", resolved_target_day)
+
+    def fsum(start_day: int, end_day: int) -> float | None:
+        return _sum(_daily_forecast_slice(frc, start_day, end_day, "precipitation_sum", resolved_target_day))
+
+    def fpop(start_day: int, end_day: int) -> float | None:
+        return _probability_mean(_daily_forecast_slice(frc, start_day, end_day, "precipitation_probability_max", resolved_target_day))
+
+    qpf_7 = _sum(f_rain_7)
+    qpf_15 = _sum(f_rain_15)
+    pop_mean_7 = _probability_mean(f_pop_7)
+    pop_max_7 = _probability_max(f_pop_7)
+    pop_mean_15 = _probability_mean(f_pop_15)
+    pop_max_15 = _probability_max(f_pop_15)
+
     out = {
         **station,
         "temperature_c": _n(cur.get("temperature_2m")),
@@ -147,8 +201,41 @@ def assemble_station(
         "water_balance_60d_mm": water_balance_60d_mm,
         "water_balance_90d_mm": water_balance_90d_mm,
         "longest_dry_streak_90d": longest_dry_streak_90d,
-        "forecast_precipitation_7d_mm": _sum(_daily_forecast(frc, 7, "precipitation_sum", resolved_target_day)),
-        "forecast_precipitation_15d_mm": _sum(_daily_forecast(frc, 15, "precipitation_sum", resolved_target_day)),
+        "forecast_precipitation_7d_mm": qpf_7,
+        "forecast_precipitation_15d_mm": qpf_15,
+        "forecast_precipitation_7d_valid_days": _valid_count(f_rain_7),
+        "forecast_precipitation_15d_valid_days": _valid_count(f_rain_15),
+        "forecast_precipitation_probability_7d_valid_days": _valid_count(f_pop_7),
+        "forecast_precipitation_probability_15d_valid_days": _valid_count(f_pop_15),
+        "forecast_precipitation_probability_mean_7d_pct": pop_mean_7,
+        "forecast_precipitation_probability_max_7d_pct": pop_max_7,
+        "forecast_precipitation_probability_mean_15d_pct": pop_mean_15,
+        "forecast_precipitation_probability_max_15d_pct": pop_max_15,
+        "forecast_precipitation_days1_2_7d_mm": fsum(1, 2),
+        "forecast_precipitation_days3_4_7d_mm": fsum(3, 4),
+        "forecast_precipitation_days5_7_7d_mm": fsum(5, 7),
+        "forecast_precipitation_probability_days1_2_7d_pct": fpop(1, 2),
+        "forecast_precipitation_probability_days3_4_7d_pct": fpop(3, 4),
+        "forecast_precipitation_probability_days5_7_7d_pct": fpop(5, 7),
+        "forecast_precipitation_days1_3_15d_mm": fsum(1, 3),
+        "forecast_precipitation_days4_7_15d_mm": fsum(4, 7),
+        "forecast_precipitation_days8_11_15d_mm": fsum(8, 11),
+        "forecast_precipitation_days12_15_15d_mm": fsum(12, 15),
+        "forecast_precipitation_probability_days1_3_15d_pct": fpop(1, 3),
+        "forecast_precipitation_probability_days4_7_15d_pct": fpop(4, 7),
+        "forecast_precipitation_probability_days8_11_15d_pct": fpop(8, 11),
+        "forecast_precipitation_probability_days12_15_15d_pct": fpop(12, 15),
+        # alias compatibili con client precedenti
+        "forecast_precipitation_early_7d_mm": fsum(1, 3),
+        "forecast_precipitation_late_7d_mm": fsum(4, 7),
+        "forecast_precipitation_first3d_mm": fsum(1, 3),
+        "forecast_precipitation_days4_7_mm": fsum(4, 7),
+        "forecast_precipitation_early_15d_mm": fsum(1, 7),
+        "forecast_precipitation_late_15d_mm": fsum(8, 15),
+        "forecast_precipitation_first7d_mm": fsum(1, 7),
+        "forecast_precipitation_days8_15_mm": fsum(8, 15),
+        "forecast_precipitation_source_kind": "r6-open-meteo-forecast-daily-buckets",
+        "forecast_source_kind": "r6-open-meteo-forecast-daily-buckets",
         "forecast_temperature_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_mean", resolved_target_day)),
         "forecast_temperature_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_mean", resolved_target_day)),
         "forecast_humidity_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_mean", resolved_target_day)),
@@ -238,6 +325,8 @@ def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
         "vegetation_indices": count(lambda s: any(numeric(s, k) for k in ["ndvi_current", "ndmi_current", "evi_current"])),
         "forecast_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_7d_mm", "forecast_temperature_mean_7d_c", "forecast_et0_7d_mm"])),
         "forecast_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_15d_mm", "forecast_temperature_mean_15d_c", "forecast_et0_15d_mm"])),
+        "forecast_timing_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_days1_2_7d_mm", "forecast_precipitation_days3_4_7d_mm", "forecast_precipitation_days5_7_7d_mm"])),
+        "forecast_timing_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_days1_3_15d_mm", "forecast_precipitation_days4_7_15d_mm", "forecast_precipitation_days8_11_15d_mm", "forecast_precipitation_days12_15_15d_mm"])),
         "et0": count(lambda s: all(numeric(s, k) for k in ["et0_30d_mm", "forecast_et0_7d_mm", "forecast_et0_15d_mm"])),
         "soil": count(lambda s: all(numeric(s, k) for k in ["soil_moisture_3_9", "soil_moisture_9_27"])),
         "scientific_complete": count(station_complete),
