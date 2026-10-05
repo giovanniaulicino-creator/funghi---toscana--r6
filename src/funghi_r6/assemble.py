@@ -1,3 +1,4 @@
+# R641-DATA-FUSION-SOURCE-PRIORITY-2026-10-05
 # R6402-FORECAST-TARGET-WINDOW-2026-10-05
 # R6401-FORECAST-TIMING-BUCKETS-2026-10-05
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
@@ -113,14 +114,27 @@ def assemble_station(
     fallback_rain = {d: _sum(_window(history, d, "rain_mm")) for d in (5, 7, 15, 30)}
     rain = {}
     provenance: dict[str, Any] = {}
+    source_decisions: dict[str, Any] = {}
+    source_conflicts: list[dict[str, Any]] = []
     for d in (5, 7, 15, 30):
-        off = _n(official.get(f"rain_{d}d_mm"))
-        rain[d] = off if off is not None else fallback_rain[d]
-        provenance[f"rain_{d}d_mm"] = {
-            "source": "SIR/CFR official" if off is not None else "Open-Meteo exact-point daily fallback",
+        field=f"rain_{d}d_mm"
+        off = _n(official.get(field))
+        model = _n(fallback_rain.get(d))
+        rain[d] = off if off is not None else model
+        chosen = "SIR/CFR official" if off is not None else "Open-Meteo exact-point daily fallback"
+        provenance[field] = {
+            "source": chosen,
             "timestamp": official.get("rain_observed_label") if off is not None else (history[-1].get("day") if history else None),
             "quality": "official" if off is not None else "model_exact_point",
         }
+        decision={"chosen":chosen,"primary":"SIR/CFR official","fallback":"Open-Meteo exact-point daily","official_mm":off,"fallback_mm":model}
+        if off is not None and model is not None:
+            absdiff=abs(off-model); denom=max(5.0,(abs(off)+abs(model))/2.0); reldiff=absdiff/denom
+            severity="high" if absdiff>=12 and reldiff>=0.55 else "medium" if absdiff>=6 and reldiff>=0.30 else "low"
+            decision.update({"absolute_difference_mm":round(absdiff,3),"relative_difference":round(reldiff,3),"agreement":severity})
+            if severity in {"medium","high"}:
+                source_conflicts.append({"field":field,"severity":severity,"official_mm":off,"fallback_mm":model,"absolute_difference_mm":round(absdiff,3),"relative_difference":round(reldiff,3),"chosen":chosen})
+        source_decisions[field]=decision
 
     # R6.38: memoria idro-climatica coerente. P30 resta l'ancora canonica
     # SIR/CFR (o il suo fallback R6); le fasce 31-60 e 61-90 provengono
@@ -132,6 +146,18 @@ def assemble_station(
     rain_61_90_mm = _sum([x.get("rain_mm") for x in history_sorted[-90:-60]]) if len(history_sorted) >= 90 else None
     rain_60d_mm = round(p30_anchor + rain_31_60_mm, 3) if p30_anchor is not None and rain_31_60_mm is not None else None
     rain_90d_mm = round(rain_60d_mm + rain_61_90_mm, 3) if rain_60d_mm is not None and rain_61_90_mm is not None else None
+    openmeteo_p30 = _n(fallback_rain.get(30))
+    p30_bias_ratio = round(p30_anchor / openmeteo_p30, 3) if p30_anchor is not None and openmeteo_p30 is not None and openmeteo_p30 > 2 else None
+    source_decisions["rain_60_90d"]={
+        "chosen":"SIR/CFR canonical P30 + Open-Meteo exact-point days 31-90",
+        "primary_anchor":"SIR/CFR P30 when available",
+        "extension":"Open-Meteo exact-point daily days 31-90",
+        "openmeteo_p30_overlap_mm":openmeteo_p30,
+        "p30_anchor_mm":p30_anchor,
+        "p30_overlap_ratio_diagnostic":p30_bias_ratio,
+        "bias_correction_applied":False,
+        "note":"Overlap diagnostic only: no automatic bias correction until prospective validation."
+    }
 
     et0_7d_mm = _sum(_window(history_sorted, 7, "et0_mm"))
     et0_15d_mm = _sum(_window(history_sorted, 15, "et0_mm"))
@@ -188,8 +214,20 @@ def assemble_station(
     pop_mean_15 = _probability_mean(f_pop_15)
     pop_max_15 = _probability_max(f_pop_15)
 
+    source_decisions.update({
+        "current_weather":{"chosen":"Open-Meteo exact-point current","fallback":None},
+        "forecast_weather":{"chosen":"Open-Meteo exact-point daily forecast","timing":"non-overlapping QPF buckets + target-window climate"},
+        "soil_model":{"chosen":"Open-Meteo exact-point soil profile","role":"support; Copernicus SSM/SWI is fused later as independent observation"},
+    })
     out = {
         **station,
+        "source_priority_version":"r641-source-priority-v1",
+        "source_decisions":source_decisions,
+        "source_conflicts":source_conflicts,
+        "rain_openmeteo_5d_mm":fallback_rain.get(5),
+        "rain_openmeteo_7d_mm":fallback_rain.get(7),
+        "rain_openmeteo_15d_mm":fallback_rain.get(15),
+        "rain_openmeteo_30d_mm":fallback_rain.get(30),
         "temperature_c": _n(cur.get("temperature_2m")),
         "humidity_pct": _n(cur.get("relative_humidity_2m")),
         "wind_speed_ms": _n(cur.get("wind_speed_10m")),

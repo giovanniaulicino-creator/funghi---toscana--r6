@@ -2,10 +2,8 @@
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 name: R6 Data Builder
 
+# R641-D1-BUDGET: bootstrap is manual only; pushes never rebuild D1 automatically.
 on:
-  push:
-    branches: [main]
-    paths: ['.r6-bootstrap-request']
   workflow_dispatch:
     inputs:
       mode:
@@ -60,9 +58,7 @@ jobs:
         id: mode
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "value=bootstrap" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "value=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.schedule }}" == "5 6 * * *" ]]; then
             echo "value=full" >> "$GITHUB_OUTPUT"

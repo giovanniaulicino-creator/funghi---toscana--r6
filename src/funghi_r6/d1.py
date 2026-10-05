@@ -12,6 +12,7 @@ import requests
 SNAPSHOT_CHUNK_BYTES = 512_000
 D1_WRITE_BATCH_SIZE = 50
 D1_SNAPSHOT_BATCH_SIZE = 4
+# R641-D1-WRITE-BUDGET-2026-10-05
 
 REQUIRED_COVERAGE_KEYS = (
     "structural",
@@ -222,7 +223,11 @@ class D1:
                 "VALUES(?,?,?,?,?,?,?,?,?,datetime('now')) "
                 "ON CONFLICT(code) DO UPDATE SET name=excluded.name,municipality=excluded.municipality,"
                 "province=excluded.province,zone=excluded.zone,altitude_m=excluded.altitude_m,lat=excluded.lat,"
-                "lon=excluded.lon,registry_source=excluded.registry_source,updated_at=datetime('now')",
+                "lon=excluded.lon,registry_source=excluded.registry_source,updated_at=datetime('now') "
+                "WHERE name IS NOT excluded.name OR municipality IS NOT excluded.municipality "
+                "OR province IS NOT excluded.province OR zone IS NOT excluded.zone "
+                "OR altitude_m IS NOT excluded.altitude_m OR lat IS NOT excluded.lat "
+                "OR lon IS NOT excluded.lon OR registry_source IS NOT excluded.registry_source",
                 [s.get("code"), s.get("name"), s.get("municipality"), s.get("province"), s.get("zone"),
                  s.get("altitude_m"), s.get("lat"), s.get("lon"), s.get("registry_source")],
             ))
@@ -235,7 +240,10 @@ class D1:
                 "INSERT INTO component_cache(code,component,payload_json,source,observed_at,quality,cycle_key,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,datetime('now')) "
                 "ON CONFLICT(code,component) DO UPDATE SET payload_json=excluded.payload_json,source=excluded.source,"
-                "observed_at=excluded.observed_at,quality=excluded.quality,cycle_key=excluded.cycle_key,updated_at=datetime('now')",
+                "observed_at=excluded.observed_at,quality=excluded.quality,cycle_key=excluded.cycle_key,updated_at=datetime('now') "
+                "WHERE payload_json IS NOT excluded.payload_json OR source IS NOT excluded.source "
+                "OR observed_at IS NOT excluded.observed_at OR quality IS NOT excluded.quality "
+                "OR cycle_key IS NOT excluded.cycle_key",
                 [rec["code"], component, json.dumps(rec["payload"], separators=(",", ":")), "open-meteo",
                  rec.get("fetched_at"), "model_exact_point", rec.get("cycle_key")],
             ))
@@ -272,7 +280,16 @@ class D1:
                 "temperature_min_c=excluded.temperature_min_c,temperature_max_c=excluded.temperature_max_c,"
                 "temperature_mean_c=excluded.temperature_mean_c,humidity_mean_pct=excluded.humidity_mean_pct,"
                 "wind_mean_ms=excluded.wind_mean_ms,vpd_max_kpa=excluded.vpd_max_kpa,et0_mm=excluded.et0_mm,"
-                "source=excluded.source,quality=excluded.quality,updated_at=datetime('now')",
+                "source=excluded.source,quality=excluded.quality,updated_at=datetime('now') "
+                "WHERE rain_mm IS NOT excluded.rain_mm "
+                "OR temperature_min_c IS NOT excluded.temperature_min_c "
+                "OR temperature_max_c IS NOT excluded.temperature_max_c "
+                "OR temperature_mean_c IS NOT excluded.temperature_mean_c "
+                "OR humidity_mean_pct IS NOT excluded.humidity_mean_pct "
+                "OR wind_mean_ms IS NOT excluded.wind_mean_ms "
+                "OR vpd_max_kpa IS NOT excluded.vpd_max_kpa "
+                "OR et0_mm IS NOT excluded.et0_mm "
+                "OR source IS NOT excluded.source OR quality IS NOT excluded.quality",
                 [row.get("code"), row.get("day"), row.get("rain_mm"), row.get("temperature_min_c"),
                  row.get("temperature_max_c"), row.get("temperature_mean_c"), row.get("humidity_mean_pct"),
                  row.get("wind_mean_ms"), row.get("vpd_max_kpa"), row.get("et0_mm"), row.get("source"), row.get("quality")],
@@ -306,7 +323,10 @@ class D1:
             "VALUES(?,?,?,?,?,?,?,datetime('now')) "
             "ON CONFLICT(source) DO UPDATE SET reachable=excluded.reachable,acquired=excluded.acquired,"
             "last_success_at=excluded.last_success_at,last_error=excluded.last_error,reference_at=excluded.reference_at,"
-            "details_json=excluded.details_json,updated_at=datetime('now')",
+            "details_json=excluded.details_json,updated_at=datetime('now') "
+            "WHERE reachable IS NOT excluded.reachable OR acquired IS NOT excluded.acquired "
+            "OR last_success_at IS NOT excluded.last_success_at OR last_error IS NOT excluded.last_error "
+            "OR reference_at IS NOT excluded.reference_at OR details_json IS NOT excluded.details_json",
             [source, 1 if health.get("reachable") else 0, int(health.get("acquired") or 0),
              health.get("last_success_at"), health.get("last_error"), health.get("reference_time"),
              json.dumps(health, separators=(",", ":"))],
