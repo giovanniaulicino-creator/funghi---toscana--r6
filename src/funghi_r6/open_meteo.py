@@ -77,21 +77,11 @@ def fetch_component(
             values = _as_list(payload)
             if len(values) != len(batch):
                 raise RuntimeError(f"{component}: risposta {len(values)} punti per {len(batch)} coordinate")
-            now = datetime.now(timezone.utc).isoformat()
-            batch_records: list[dict[str, Any]] = []
-            for station, item in zip(batch, values):
-                record = {"code": station["code"], "component": component, "fetched_at": now, "cycle_key": cycle_key, "payload": item}
-                records[station["code"]] = record
-                batch_records.append(record)
-            if on_batch:
-                on_batch(component, batch_records)
-            print(f"[R6] {component}: {label} OK ({len(batch)} stazioni, totale {len(records)})", flush=True)
         except Exception as exc:
-            # Lo storico e' il blocco piu' pesante. Un errore su 12 coordinate non deve
-            # buttare via l'intero gruppo: lo dividiamo progressivamente e conserviamo
-            # ogni sottogruppo riuscito. Il fallimento diventa definitivo solo sulla
-            # singola stazione.
-            if component == "history_bootstrap" and len(batch) > 1:
+            # R6.55: recupero gerarchico anche per current, forecast e soil.
+            # Un timeout su un batch non deve cancellare tutte le stazioni sane.
+            # Solo la singola stazione che continua a fallire rimane incompleta.
+            if component in ("current", "forecast", "soil", "history_bootstrap") and len(batch) > 1:
                 mid = len(batch) // 2
                 left, right = batch[:mid], batch[mid:]
                 print(f"[R6] {component}: {label} fallito ({exc}); split {len(left)}+{len(right)}", flush=True)
@@ -104,6 +94,22 @@ def fetch_component(
                 return
             errors.append(f"{label} {batch[0]['code']}..{batch[-1]['code']}: {exc}")
             print(f"[R6] {component}: {label} ERRORE DEFINITIVO: {exc}", flush=True)
+            return
+
+        # Le scritture D1 non fanno parte del recupero HTTP: se falliscono,
+        # propaghiamo l'errore. NON dichiarare acquisita una stazione non salvata.
+        now = datetime.now(timezone.utc).isoformat()
+        batch_records: list[dict[str, Any]] = []
+        for station, item in zip(batch, values):
+            batch_records.append({
+                "code": station["code"], "component": component,
+                "fetched_at": now, "cycle_key": cycle_key, "payload": item,
+            })
+        if on_batch:
+            on_batch(component, batch_records)
+        for rec in batch_records:
+            records[rec["code"]] = rec
+        print(f"[R6] {component}: {label} OK ({len(batch)} stazioni, totale {len(records)})", flush=True)
 
     for batch_no, batch in enumerate(chunks(stations, batch_size), start=1):
         fetch_batch(batch, f"batch {batch_no}")
