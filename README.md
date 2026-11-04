@@ -54,12 +54,14 @@ python -m funghi_r6.cli --mode light
 
 Il workflow `r6-builder.yml` prevede:
 
-- 06:05 Europe/Rome: `full`;
-- 12:05 Europe/Rome: `light`;
-- 18:05 Europe/Rome: `light`;
-- avvio manuale `workflow_dispatch`, compreso `bootstrap`.
+- scheduler Cloudflare indipendente ogni dieci minuti da01:15 Europe/Rome;
+- fallback GitHub alle01:17,03:17,06:17,09:17 Europe/Rome;
+- una sola pubblicazione completa per giornata; i tentativi successivi riusano ACTIVE;
+- avvio manuale `workflow_dispatch`, default `full`; `bootstrap` e `light` per manutenzione.
 
-Finché i secret Cloudflare non sono configurati, il builder lavora in modalità **ARTIFACT_ONLY** e carica `manifest.json`, `snapshot.json.gz` e diagnostica come artifact GitHub. Questo consente di verificare il primo 418/418 senza toccare la produzione.
+Dettagli, attivazione, verifica e limiti: [R6584](docs/R6584-builder-giornaliero.md).
+
+Il workflow di produzione richiede i secret D1 configurati e il database Toscana corretto. Se mancano fallisce esplicitamente senza pubblicare. Il CLI `--mode bootstrap` senza `--daily` mantiene la possibilità di produrre un artifact locale senza D1.
 
 ## Secret Cloudflare — da configurare solo dopo il primo audit artifact-only
 

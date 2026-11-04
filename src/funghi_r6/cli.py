@@ -12,8 +12,10 @@ from pathlib import Path
 
 from .assemble import assemble_station, coverage
 from .catalog import fetch_catalog
+from .cache_policy import reusable_component, reusable_history, reusable_history_payload
 from .copernicus import fetch_copernicus_bundle
 from .config import SETTINGS
+from .daily import rome_day, validate_day
 from .d1 import D1
 from .http import HttpClient
 from .open_meteo import fetch_component, daily_rows
@@ -74,10 +76,25 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Funghi Toscana AI R6 Data Builder")
     p.add_argument("--mode", choices=["bootstrap", "full", "light"], default="full")
     p.add_argument("--out", default="out")
+    p.add_argument("--daily", action="store_true", help="Una pubblicazione completa per giornata Europe/Rome")
+    p.add_argument("--target-day", default="", help="Giornata richiesta YYYY-MM-DD; richieste scadute non scaricano dati")
+    p.add_argument("--request-id", default="", help="Identificativo diagnostico dell'innesco")
+    p.add_argument("--force-rebuild", action="store_true", help="Manutenzione esplicita: consenti una nuova generazione oggi")
     args = p.parse_args()
+    if args.force_rebuild and not args.daily:
+        p.error("--force-rebuild richiede --daily")
+    try:
+        target_day = validate_day(args.target_day) if args.target_day else rome_day()
+    except ValueError as exc:
+        p.error(str(exc))
+    if len(args.request_id) > 160:
+        p.error("request-id troppo lungo")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if target_day != rome_day():
+        _daily_receipt(out_dir, "EXPIRED_REQUEST", target_day, args.request_id)
+        return 0
     http = HttpClient(max_retries=SETTINGS.max_retries)
     d1 = (
         D1(
@@ -103,6 +120,14 @@ def main() -> int:
 
     if d1:
         d1.init_schema(Path(__file__).with_name("schema.sql").read_text(encoding="utf-8"))
+
+    if args.daily:
+        if not d1:
+            p.error("--daily richiede D1 persistente")
+        active = d1.daily_active_manifest(target_day, SETTINGS.expected_stations)
+        if active and not args.force_rebuild:
+            _daily_receipt(out_dir, "DAILY_ALREADY_READY", target_day, args.request_id, active)
+            return 0
 
     persisted_catalog = d1.load_catalog() if d1 else []
     stations, catalog_health = fetch_catalog(
@@ -131,9 +156,10 @@ def main() -> int:
         d1.source_health("sir_rainfall", sir_health)
 
     local_now = datetime.now(ZoneInfo(SETTINGS.timezone))
-    target_day = local_now.date().isoformat()
     slot = (local_now.hour // 6) * 6
-    cycle_key = f"{local_now.date().isoformat()}T{slot:02d}-{args.mode}"
+    # All automatic retries of the same Rome day reuse successful provider batches,
+    # even when the retry crosses a six-hour boundary. Force remains maintenance.
+    cycle_key = f"{target_day}T{0 if args.daily and not args.force_rebuild else slot:02d}-{args.mode}"
 
     component_cache: dict[str, dict[str, dict]] = {}
     errors: dict[str, list[str]] = {}
@@ -144,6 +170,12 @@ def main() -> int:
 
     for component in ["current", "forecast", "soil"]:
         existing = d1.load_component_map(component, cycle_key) if d1 else {}
+        if args.daily:
+            by_code = {s["code"]: s for s in stations}
+            existing = {
+                code: rec for code, rec in existing.items()
+                if code in by_code and reusable_component(by_code[code], component, rec.get("payload"), target_day)
+            }
         targets = [s for s in stations if s["code"] not in existing]
         recs, errs = fetch_component(
             http,
@@ -154,6 +186,12 @@ def main() -> int:
             on_batch=persist_batch,
             cycle_key=cycle_key,
         )
+        if args.daily:
+            invalid = [code for code, rec in recs.items()
+                       if code not in by_code or not reusable_component(by_code[code], component, rec.get("payload"), target_day)]
+            for code in invalid:
+                recs.pop(code)
+                errs.append(f"scientific_incomplete:{code}; componente da ritentare")
         component_cache[component] = {**existing, **recs}
         errors[component] = errs
 
@@ -161,6 +199,13 @@ def main() -> int:
 
     if args.mode == "bootstrap":
         existing = d1.load_component_map("history_bootstrap", cycle_key) if d1 else {}
+        if args.daily:
+            by_code = {s["code"]: s for s in stations}
+            existing = {
+                code: rec for code, rec in existing.items()
+                if code in by_code and reusable_history_payload(by_code[code], rec.get("payload"),
+                                                               target_day, official_rain.get(code))
+            }
         targets = [s for s in stations if s["code"] not in existing]
         recs, errs = fetch_component(
             http,
@@ -198,7 +243,9 @@ def main() -> int:
         # recupera 35 giorni solo per le stazioni necessarie.
         deficient = [
             s for s in stations
-            if len(history_by_code.get(s["code"]) or []) < 88
+            if len(history_by_code.get(s["code"]) or []) < 88 or (
+                args.daily and not reusable_history(s, history_by_code.get(s["code"]) or [], target_day, official_rain.get(s["code"]))
+            )
         ]
         if deficient:
             recovery_cycle = f"{cycle_key}-history-recovery"
@@ -295,6 +342,9 @@ def main() -> int:
         assembled.append(station_out)
 
     cov = coverage(assembled)
+    if target_day != rome_day():
+        _daily_receipt(out_dir, "EXPIRED_REQUEST", target_day, args.request_id)
+        return 0
     generated_at = datetime.now(timezone.utc).isoformat()
     generation = f"R6-{target_day}-{datetime.now(timezone.utc).strftime('%H%M%SZ')}"
     open_meteo_health = _open_meteo_health(
@@ -382,6 +432,14 @@ def main() -> int:
 
     if d1:
         try:
+            if target_day != rome_day():
+                _daily_receipt(out_dir, "EXPIRED_REQUEST", target_day, args.request_id)
+                return 0
+            if args.daily and not args.force_rebuild:
+                active = d1.daily_active_manifest(target_day, SETTINGS.expected_stations)
+                if active:
+                    _daily_receipt(out_dir, "DAILY_ALREADY_READY", target_day, args.request_id, active)
+                    return 0
             verification = d1.publish_generation(
                 generation,
                 target_day,
@@ -389,6 +447,7 @@ def main() -> int:
                 manifest,
                 raw,
                 expected_stations=SETTINGS.expected_stations,
+                required_rome_day=target_day if args.daily else None,
             )
             manifest["publication"] = "ACTIVE"
             manifest["d1_verification"] = verification
@@ -399,7 +458,21 @@ def main() -> int:
             raise
 
     _write_manifest(out_dir, manifest)
+    if args.daily:
+        _daily_receipt(out_dir, "DAILY_PUBLISHED", target_day, args.request_id, manifest)
     return 0
+
+
+def _daily_receipt(out_dir: Path, status: str, target_day: str, request_id: str, active: dict | None = None) -> None:
+    receipt = {
+        "status": status, "target_day": target_day, "request_id": request_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "generation": (active or {}).get("generation"),
+    }
+    (out_dir / "daily-receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8")
+    if status != "DAILY_PUBLISHED":
+        _write_diag(out_dir, receipt)
+    print(f"[R6584] {status} day={target_day} generation={receipt['generation'] or '-'}", flush=True)
 
 
 def _write_manifest(out_dir: Path, manifest: dict) -> None:

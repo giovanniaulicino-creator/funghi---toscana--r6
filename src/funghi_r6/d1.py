@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from .daily import complete_daily_manifest, rome_day
+
 
 SNAPSHOT_CHUNK_BYTES = 512_000
 D1_WRITE_BATCH_SIZE = 50
@@ -337,6 +339,45 @@ class D1:
         rows = _rows(result)
         return str(rows[0].get("value")) if rows and rows[0].get("value") else None
 
+    def daily_active_manifest(self, target_day: str, expected_stations: int) -> dict | None:
+        # Read only metadata and counts, never the ~20 MB snapshot on each retry.
+        # Physical SHA/readback was verified by publish_generation before ACTIVE.
+        result = self.query(
+            "SELECT r.manifest_json,s.sha256,s.byte_length,s.chunk_count,"
+            "(SELECT COUNT(*) FROM generation_station WHERE generation=r.generation AND complete=1) AS station_rows,"
+            "(SELECT COUNT(*) FROM generation_snapshot_chunk WHERE generation=r.generation) AS chunks,"
+            "(SELECT SUM(raw_bytes) FROM generation_snapshot_chunk WHERE generation=r.generation) AS chunk_bytes,"
+            "(SELECT MIN(chunk_index) FROM generation_snapshot_chunk WHERE generation=r.generation) AS first_chunk,"
+            "(SELECT MAX(chunk_index) FROM generation_snapshot_chunk WHERE generation=r.generation) AS last_chunk "
+            "FROM system_state a JOIN generation_runs r ON r.generation=a.value "
+            "JOIN generation_snapshot s ON s.generation=r.generation "
+            "WHERE a.key='ACTIVE' AND r.status='ACTIVE' AND r.target_day=? "
+            "AND r.structural_total=? AND r.scientific_total=? AND s.verified=1",
+            [target_day, expected_stations, expected_stations],
+        )
+        rows = _rows(result)
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            manifest = json.loads(row["manifest_json"])
+        except (ValueError, TypeError):
+            return None
+        if not complete_daily_manifest(manifest, target_day, expected_stations):
+            return None
+        if (
+            row["sha256"] != manifest["sha256"]
+            or row["byte_length"] != manifest["snapshot_bytes"]
+            or row["chunk_count"] != manifest["d1_verification"]["snapshot_chunks"]
+            or row["station_rows"] != expected_stations
+            or row["chunks"] != row["chunk_count"]
+            or row["chunk_bytes"] != row["byte_length"]
+            or row["first_chunk"] != 0
+            or row["last_chunk"] != row["chunk_count"] - 1
+        ):
+            return None
+        return manifest
+
     def _persist_snapshot_chunks(self, generation: str, raw_snapshot: bytes, sha256: str) -> int:
         chunks = split_utf8_chunks(raw_snapshot)
         self.query("DELETE FROM generation_snapshot_chunk WHERE generation=?", [generation])
@@ -395,6 +436,7 @@ class D1:
         raw_snapshot: bytes,
         *,
         expected_stations: int,
+        required_rome_day: str | None = None,
     ) -> dict[str, Any]:
         contract = validate_snapshot_contract(
             generation, target_day, stations, manifest, raw_snapshot, expected_stations
@@ -463,6 +505,9 @@ class D1:
             generation, expected_stations, expected_stations,
             contract["sha256"], len(raw_snapshot), expected_stations,
         ]
+
+        if required_rome_day is not None and rome_day() != required_rome_day:
+            raise RuntimeError("R6 richiesta scaduta durante lo staging: ACTIVE precedente conservato")
 
         # Un unico batch D1: il vecchio ACTIVE resta disponibile se una qualsiasi
         # istruzione fallisce. Il guard rende anche un eventuale retry idempotente.

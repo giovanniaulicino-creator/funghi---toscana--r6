@@ -1,0 +1,7 @@
+{
+  "name": "funghi-toscana-r6-scheduler",
+  "private": true,
+  "type": "module",
+  "version": "6.58.4",
+  "scripts": {"test": "node --test test-scheduler.mjs"}
+}

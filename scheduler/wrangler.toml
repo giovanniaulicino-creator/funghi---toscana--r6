@@ -1,0 +1,16 @@
+name = "funghi-toscana-r6-scheduler"
+main = "src/index.js"
+compatibility_date = "2026-11-04"
+workers_dev = true
+
+[triggers]
+crons = ["5,15,25,35,45,55 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "funghi-toscana-r6"
+database_id = "b198c62b-1165-4626-9bd9-40f10c6ff432"
+
+# Secret, never a plaintext var: GITHUB_ACTIONS_TOKEN.
+# Fine-grained token: only giovanniaulicino-creator/funghi---toscana--r6,
+# repository Actions read/write. No code, other repositories or account scope.

@@ -1,28 +1,38 @@
-# R6381-COPERNICUS-FIX-2026-10-04
-# R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 name: R6 Data Builder
-
 # R641-D1-BUDGET: bootstrap is manual only; pushes never rebuild D1 automatically.
+run-name: R6 daily ${{ inputs.target_day || 'Rome today' }} · ${{ inputs.request_id || github.event_name }}
+
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "bootstrap = primo backfill; full = mattino; light = infragiornaliero"
+        description: "full = giornaliero; bootstrap/light = manutenzione manuale"
         required: true
-        default: bootstrap
+        default: full
         type: choice
-        options: [bootstrap, full, light]
+        options: [full, bootstrap, light]
+      target_day:
+        description: "Giornata Europe/Rome YYYY-MM-DD (vuoto = oggi)"
+        default: ''
+        type: string
+      request_id:
+        description: "Identificativo dell'innesco esterno (diagnostica)"
+        default: ''
+        type: string
+      force_rebuild:
+        description: "Manutenzione: ricostruisci anche se oggi è già completo"
+        default: false
+        type: boolean
+  # Fallback only. Cloudflare checks every ten minutes from 01:15 Rome.
+  # Retries after a complete ACTIVE read metadata and do not download sources.
   schedule:
-    - cron: '45 2 * * *'
-      timezone: 'Europe/Rome'
-    - cron: '5 12 * * *'
-      timezone: 'Europe/Rome'
-    - cron: '5 18 * * *'
+    - cron: '17 1,3,6,9 * * *'
       timezone: 'Europe/Rome'
 
 permissions:
   contents: read
 
+# Every writer, automatic or manual, is serialized across this repository.
 concurrency:
   group: funghi-toscana-r6-builder
   cancel-in-progress: false
@@ -50,43 +60,45 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-
       - name: Install builder
         run: pip install -e .
-
-      - name: Resolve mode
-        id: mode
+      - name: Check production configuration
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event.schedule }}" == "45 2 * * *" ]]; then
-            echo "value=full" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=light" >> "$GITHUB_OUTPUT"
+          if [[ -z "$CF_ACCOUNT_ID" || -z "$CF_D1_DATABASE_ID" || -z "$CF_API_TOKEN" ]]; then
+            echo '::error::R6 D1 non configurato: nessuna pubblicazione eseguita.'
+            exit 1
           fi
-
-      - name: Check scheduled D1 readiness
-        id: readiness
+          if [[ "$CF_D1_DATABASE_ID" != 'b198c62b-1165-4626-9bd9-40f10c6ff432' ]]; then
+            echo '::error::Database diverso dal D1 Toscana R6: esecuzione bloccata.'
+            exit 1
+          fi
+      - name: Build or reuse today's scientific snapshot
+        shell: bash
+        env:
+          BUILDER_MODE: ${{ inputs.mode || 'full' }}
+          BUILDER_TARGET_DAY: ${{ inputs.target_day || '' }}
+          BUILDER_REQUEST_ID: ${{ inputs.request_id || github.event_name }}
+          BUILDER_FORCE: ${{ inputs.force_rebuild && 'true' || 'false' }}
+        run: |
+          args=(--daily --mode "$BUILDER_MODE" --out out --request-id "$BUILDER_REQUEST_ID")
+          if [[ -n "$BUILDER_TARGET_DAY" ]]; then args+=(--target-day "$BUILDER_TARGET_DAY"); fi
+          if [[ "$BUILDER_FORCE" == 'true' ]]; then args+=(--force-rebuild); fi
+          python -m funghi_r6.cli "${args[@]}"
+      - name: Daily result
+        if: always()
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" ]] && \
-             { [[ -z "$CF_ACCOUNT_ID" ]] || [[ -z "$CF_D1_DATABASE_ID" ]] || [[ -z "$CF_API_TOKEN" ]]; }; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=R6 D1 non configurato::Run schedulato saltato senza errore. Bootstrap manuale resta disponibile."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          if [[ -f out/daily-receipt.json ]]; then
+            cat out/daily-receipt.json >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -f out/diagnostics.json ]]; then
+            cat out/diagnostics.json >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Build scientific snapshot
-        if: steps.readiness.outputs.run == 'true'
-        run: python -m funghi_r6.cli --mode "${{ steps.mode.outputs.value }}" --out out
-
       - name: Upload R6 audit artifacts
-        if: always() && steps.readiness.outputs.run == 'true'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: r6-${{ steps.mode.outputs.value }}-${{ github.run_id }}
+          name: r6-daily-${{ github.run_id }}
           path: out/
           if-no-files-found: warn
           retention-days: 14

@@ -17,8 +17,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - name: Install
-        run: pip install -e . pytest
+        run: pip install -e . pytest pyyaml
       - name: Unit tests
         run: pytest -q
       - name: Python syntax audit
@@ -27,3 +30,7 @@ jobs:
         run: node --check worker/src/index.js
       - name: Worker contract tests
         run: node worker/test-worker.mjs
+      - name: Scheduler syntax and integration tests
+        run: |
+          node --check scheduler/src/index.js
+          node --test scheduler/test-scheduler.mjs
