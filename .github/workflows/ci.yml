@@ -34,3 +34,9 @@ jobs:
         run: |
           node --check scheduler/src/index.js
           node --test scheduler/test-scheduler.mjs
+      - name: Radar bridge contract tests
+        run: node --test radar-bridge/test-bridge.mjs
+      - name: Cloudflare runtime and named RPC
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test:runtime

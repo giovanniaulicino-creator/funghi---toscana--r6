@@ -2,16 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import worker from "./src/index.js";
+import worker from "./src/handler.js";
 import { check, completeManifest, dailyActive, romeClock, STATE_KEY, REPOSITORY } from "./src/core.js";
+import { runTick, probe, TICK_KEY } from "./src/runtime.js";
 
 const DAY = "2026-11-04";
 const NOW = Date.parse(DAY + "T00:15:00Z"); // 01:15 Rome in winter.
 const secret = "unit-test-secret-never-logged";
 
-test("deployment entrypoint exports only the Cloudflare handler", async () => {
-  const entry = await import("./src/index.js");
-  assert.deepEqual(Object.keys(entry), ["default"]);
+test("Node-testable handler exports only the default handler and JSON helper", async () => {
+  const entry = await import("./src/handler.js");
+  assert.deepEqual(Object.keys(entry), ["default", "json"]);
   assert.equal(typeof entry.default.scheduled, "function");
   assert.equal(typeof entry.default.fetch, "function");
 });
@@ -52,7 +53,7 @@ function mockGitHub({ pending, failure, dispatchStatus = 204, dispatchBody = {},
   const fn = async (url, init) => {
     calls.push({ url, ...init });
     assert.ok(url.startsWith("https://api.github.com/repos/" + REPOSITORY + "/"));
-    assert.equal(init.redirect, "error");
+    assert.equal(init.redirect, "manual");
     assert.equal(init.headers.authorization, "Bearer " + secret);
     if (failure) return new Response("do not log response with " + secret, { status: failure });
     if (init.method === "POST") {
@@ -66,6 +67,36 @@ function mockGitHub({ pending, failure, dispatchStatus = 204, dispatchBody = {},
   return { calls, fn };
 }
 const options = (mock, extra = {}) => ({ now: NOW, requestId: "request-a", fetcher: mock.fn, ...extra });
+
+test("RPC receipt is one bounded row; complete daily data makes no HTTP call", async () => {
+  const env = environment(); seed(env.DB);
+  const http = mockGitHub();
+  const receipt = await runTick(env, options(http));
+  assert.equal(receipt.status, "DAILY_ALREADY_READY");
+  assert.equal(receipt.source, "radar-cron-rpc");
+  await runTick(env, options(http, { now: NOW + 1 }));
+  await runTick(env, options(http)); // Older invocation must not replace newer receipt.
+  const rows = env.DB.sql.prepare("SELECT value FROM system_state WHERE key=?").all(TICK_KEY);
+  assert.equal(rows.length, 1); assert.equal(JSON.parse(rows[0].value).started_ms, NOW + 1);
+  assert.equal(http.calls.length, 0);
+});
+
+test("RPC probe is strictly read-only and exposes no token", async () => {
+  const env = environment();
+  const before = env.DB.sql.prepare("SELECT * FROM system_state").all();
+  const result = await probe(env);
+  assert.equal(result.revision, "R6585"); assert.equal(result.last_tick, null);
+  assert.equal(result.token_configured, true);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.deepEqual(env.DB.sql.prepare("SELECT * FROM system_state").all(), before);
+});
+
+test("RPC tick retains the dispatch and lease contract", async () => {
+  const env = environment(), http = mockGitHub();
+  assert.equal((await runTick(env, options(http))).status, "DISPATCH_ACCEPTED");
+  assert.equal((await runTick(env, options(http))).status, "LEASE_BUSY");
+  assert.equal(http.calls.filter(c => c.method === "POST").length, 1);
+});
 
 test("Rome day/window follows midnight and both DST changes", () => {
   assert.deepEqual(romeClock(Date.parse("2026-11-03T23:00:00Z")), { day: DAY, minute: 0 });
@@ -146,7 +177,7 @@ test("simultaneous isolates acquire one lease and dispatch once (real SQLite CAS
   assert.equal(mock.calls.filter(c => c.method === "POST").length, 1);
 });
 
-for (const failure of [401, 403, 429, 500]) test("HTTP " + failure + " is retryable and never leaks secret/body", async () => {
+for (const failure of [301, 302, 307, 308, 401, 403, 429, 500]) test("HTTP " + failure + " is retryable and never leaks secret/body", async () => {
   const env = environment(), mock = mockGitHub({ failure });
   const first = await check(env, options(mock));
   assert.equal(first.status, "RETRY_REQUIRED");

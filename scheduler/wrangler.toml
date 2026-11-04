@@ -4,7 +4,8 @@ compatibility_date = "2026-11-04"
 workers_dev = true
 
 [triggers]
-crons = ["5,15,25,35,45,55 * * * *"]
+# R6585 reuses the existing radar Cron via BuilderTrigger RPC.
+crons = []
 
 [[d1_databases]]
 binding = "DB"

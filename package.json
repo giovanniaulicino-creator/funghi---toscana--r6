@@ -1,0 +1,7 @@
+{
+  "name": "funghi-toscana-r6-runtime-checks",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:runtime": "node scheduler/test-runtime.cjs" },
+  "devDependencies": { "wrangler": "4.157.0" }
+}

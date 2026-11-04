@@ -219,3 +219,6 @@ __marimo__/
 
 # Wrangler local bundles and runtime state
 .wrangler/
+
+# Node runtime test dependencies
+node_modules/

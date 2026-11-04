@@ -70,7 +70,7 @@ async function save(db, state) {
 
 async function github(fetcher, token, path, init = {}) {
   const response = await fetcher(`${API}${path}`, {
-    ...init, redirect: "error", signal: AbortSignal.timeout(12000),
+    ...init, redirect: "manual", signal: AbortSignal.timeout(12000),
     headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`,
       "x-github-api-version": "2026-03-10", "user-agent": "funghi-toscana-r6584-scheduler",
       ...(init.body ? { "content-type": "application/json" } : {}) },
