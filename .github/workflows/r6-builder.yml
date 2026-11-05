@@ -81,7 +81,7 @@ jobs:
           BUILDER_REQUEST_ID: ${{ inputs.request_id || github.event_name }}
           BUILDER_FORCE: ${{ inputs.force_rebuild && 'true' || 'false' }}
         run: |
-          args=(--daily --mode "$BUILDER_MODE" --out out --request-id "$BUILDER_REQUEST_ID")
+          args=(--daily --provider-readiness-guard --mode "$BUILDER_MODE" --out out --request-id "$BUILDER_REQUEST_ID")
           if [[ -n "$BUILDER_TARGET_DAY" ]]; then args+=(--target-day "$BUILDER_TARGET_DAY"); fi
           if [[ "$BUILDER_FORCE" == 'true' ]]; then args+=(--force-rebuild); fi
           python -m funghi_r6.cli "${args[@]}"
