@@ -172,9 +172,9 @@ def main() -> int:
         if status:
             report = json.loads((out_dir / "forecast-readiness.json").read_text(encoding="utf-8"))
             details = {key: report[key] for key in
-                       ("probe_code", "issues", "deadline_utc", "checked_at", "errors")}
+                       ("probe_code", "issues", "deadline_utc", "checked_at", "errors", "transport_failures")}
             _daily_receipt(out_dir, status, target_day, args.request_id, readiness_details=details)
-            if status in {"WAITING_FORECAST_PROVIDER", "EXPIRED_REQUEST"}:
+            if status in {"WAITING_FORECAST_PROVIDER", "WAITING_FORECAST_TRANSPORT", "EXPIRED_REQUEST"}:
                 return 0
             raise SystemExit("R6587 forecast preliminare incompleto: leggere forecast-readiness.json; ACTIVE invariato")
 
@@ -507,34 +507,41 @@ def _forecast_preflight(http, d1, stations: list[dict], cycle_key: str,
     code = probe["code"]
     record = existing.get(code)
     errors = []
+    transport_failures = []
     from_cache = bool(record and not readiness.forecast_issues(record.get("payload"), target_day)
                       and reusable_component(probe, "forecast", record.get("payload"), target_day))
     if not from_cache:
-        records, errors = fetch_component(http, [probe], component="forecast",
-            batch_size=1, pause_s=0, cycle_key=cycle_key)
+        records, errors = fetch_component(http, [probe], component="forecast_probe",
+            batch_size=1, pause_s=0, cycle_key=cycle_key, failure_details=transport_failures)
         record = records.get(code)
-        if (record and not errors and not readiness.forecast_issues(record.get("payload"), target_day)
-                and reusable_component(probe, "forecast", record.get("payload"), target_day)):
-            # Reuse this successful request in the normal full acquisition.
-            d1.persist_component_batch("forecast", [record])
-            existing[code] = record
+        # A minimal probe must not replace a full forecast containing min/max,
+        # humidity, wind and the other scientific variables in persistent cache.
     now = readiness.utc_now()
     evidence = readiness.forecast_evidence(code, record or {}, target_day)
     issues = evidence["issues"]
+    if not record and transport_failures:
+        issues = [{"reason": failure["reason"], "status_code": failure["status_code"]}
+                  for failure in transport_failures]
+        evidence["issues"] = issues
     valid = bool(record and not errors and not issues
                  and reusable_component(probe, "forecast", record.get("payload"), target_day))
     if not valid and not issues:
         issues = [{"reason": "aggregate_coverage_incomplete"}]
-    status = (None if valid else "WAITING_FORECAST_PROVIDER"
-              if record and not errors and readiness.tail_not_ready(issues)
-              and readiness.may_wait(target_day, now, forced=forced)
-              else "BLOCKED_FORECAST_PREFLIGHT")
+    status = None if valid else "BLOCKED_FORECAST_PREFLIGHT"
+    if not valid and readiness.may_wait(target_day, now, forced=forced):
+        if (not record and transport_failures
+                and all(failure["retryable"] and failure["reason"] in
+                        {"timeout", "connection_error", "http_error"} for failure in transport_failures)):
+            status = "WAITING_FORECAST_TRANSPORT"
+        elif record and not errors and readiness.tail_not_ready(issues):
+            status = "WAITING_FORECAST_PROVIDER"
     if now.astimezone(ZoneInfo("Europe/Rome")).date().isoformat() != target_day:
         status = "EXPIRED_REQUEST"
     report = {"status": status or "PROBE_READY_FULL_VALIDATION_REQUIRED", "probe_code": code,
               "target_day": target_day, "checked_at": now.isoformat(),
               "deadline_utc": readiness.deadline_utc(target_day), "from_cache": from_cache,
-              "issues": issues, "errors": errors, "evidence": evidence,
+              "issues": issues, "errors": errors, "transport_failures": transport_failures,
+              "evidence": evidence,
               "published": False, "note": "Probe non certifica le altre centraline; ACTIVE non modificato."}
     (out_dir / "forecast-readiness.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")

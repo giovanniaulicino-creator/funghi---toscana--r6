@@ -6,6 +6,9 @@ import time
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
+from .http import FetchError
+from .forecast_readiness import FIELDS
+
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -40,6 +43,33 @@ def _as_list(payload: Any) -> list[dict[str, Any]]:
     return [payload] if isinstance(payload, dict) else []
 
 
+def _forecast_by_variables(http, params: dict[str, str], pause_s: float) -> dict:
+    """Recover a single point using all original variables and identical dates/grid."""
+    variables = params["daily"].split(",")
+    merged = None
+    identity = ("latitude", "longitude", "elevation", "timezone", "utc_offset_seconds")
+    for start in range(0, len(variables), 6):
+        fields = variables[start:start + 6]
+        part = http.get_json(FORECAST_URL, params={**params, "daily": ",".join(fields)},
+                             max_attempts=2, timeout_s=(8, 25))
+        daily = part.get("daily") if isinstance(part, dict) else None
+        dates = daily.get("time") if isinstance(daily, dict) else None
+        if (not isinstance(dates, list) or not dates
+                or any(not isinstance(daily.get(field), list) or len(daily[field]) != len(dates)
+                       for field in fields)):
+            raise FetchError("Forecast suddiviso: serie giornaliere incoerenti", reason="invalid_daily_object")
+        if merged is None:
+            merged = {**part, "daily": {"time": dates}, "daily_units": {}}
+        elif (merged["daily"]["time"] != dates
+              or any(merged.get(key) != part.get(key) for key in identity)):
+            raise FetchError("Forecast suddiviso: date o griglia discordanti", reason="inconsistent_forecast_parts")
+        merged["daily"].update({field: daily[field] for field in fields})
+        merged["daily_units"].update(part.get("daily_units") or {})
+        if pause_s > 0 and start + 6 < len(variables):
+            time.sleep(pause_s)
+    return merged
+
+
 def fetch_component(
     http,
     stations: list[dict[str, Any]],
@@ -49,6 +79,7 @@ def fetch_component(
     pause_s: float,
     on_batch: Callable[[str, list[dict[str, Any]]], None] | None = None,
     cycle_key: str | None = None,
+    failure_details: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     records: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
@@ -62,6 +93,10 @@ def fetch_component(
             elif component == "forecast":
                 params.update({"daily": DAILY_VARS, "past_days": "2", "forecast_days": "16"})
                 payload = http.get_json(FORECAST_URL, params=params)
+            elif component == "forecast_probe":
+                params.update({"daily": ",".join(FIELDS), "past_days": "0", "forecast_days": "16"})
+                payload = http.get_json(FORECAST_URL, params=params,
+                                        max_attempts=2, timeout_s=(5, 20))
             elif component == "soil":
                 params["current"] = SOIL_VARS
                 payload = http.get_json(FORECAST_URL, params=params)
@@ -78,10 +113,13 @@ def fetch_component(
             if len(values) != len(batch):
                 raise RuntimeError(f"{component}: risposta {len(values)} punti per {len(batch)} coordinate")
         except Exception as exc:
+            # Configuration/authentication and rate limits do not improve by
+            # multiplying coordinate requests. Let the scheduler retry later.
+            splittable = not isinstance(exc, FetchError) or (exc.retryable and exc.status_code != 429)
             # R6.55: recupero gerarchico anche per current, forecast e soil.
             # Un timeout su un batch non deve cancellare tutte le stazioni sane.
             # Solo la singola stazione che continua a fallire rimane incompleta.
-            if component in ("current", "forecast", "soil", "history_bootstrap") and len(batch) > 1:
+            if splittable and component in ("current", "forecast", "soil", "history_bootstrap") and len(batch) > 1:
                 mid = len(batch) // 2
                 left, right = batch[:mid], batch[mid:]
                 print(f"[R6] {component}: {label} fallito ({exc}); split {len(left)}+{len(right)}", flush=True)
@@ -92,9 +130,25 @@ def fetch_component(
                     time.sleep(min(max(pause_s, 0.5), 3.0))
                 fetch_batch(right, f"{label}.B", depth + 1)
                 return
-            errors.append(f"{label} {batch[0]['code']}..{batch[-1]['code']}: {exc}")
-            print(f"[R6] {component}: {label} ERRORE DEFINITIVO: {exc}", flush=True)
-            return
+            if (component == "forecast" and len(batch) == 1 and isinstance(exc, FetchError)
+                    and exc.retryable and exc.reason != "invalid_json" and exc.status_code != 429):
+                try:
+                    payload = _forecast_by_variables(http, params, pause_s)
+                    values = [payload]
+                    print(f"[R6595] forecast: {label} recuperato con variabili suddivise", flush=True)
+                except Exception as recovery_error:
+                    exc = recovery_error
+                else:
+                    exc = None
+            if exc is not None:
+                if failure_details is not None:
+                    failure_details.append({"codes": [station["code"] for station in batch],
+                        "reason": getattr(exc, "reason", "request_error"),
+                        "retryable": getattr(exc, "retryable", False),
+                        "status_code": getattr(exc, "status_code", None)})
+                errors.append(f"{label} {batch[0]['code']}..{batch[-1]['code']}: {exc}")
+                print(f"[R6] {component}: {label} ERRORE DEFINITIVO: {exc}", flush=True)
+                return
 
         # Le scritture D1 non fanno parte del recupero HTTP: se falliscono,
         # propaghiamo l'errore. NON dichiarare acquisita una stazione non salvata.

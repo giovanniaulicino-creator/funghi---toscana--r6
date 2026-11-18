@@ -40,7 +40,7 @@ def prepare(monkeypatch, tmp_path, db, payload, *, hour=1, forced=False, errors=
 
     def fetch(http, stations, **options):
         calls.append((options["component"], len(stations)))
-        assert options["component"] == "forecast" and len(stations) == 1
+        assert options["component"] == "forecast_probe" and len(stations) == 1
         return ({stations[0]["code"]: record(payload, stations[0]["code"])} if payload else {}), errors or []
 
     monkeypatch.setattr(cli, "fetch_component", fetch)
@@ -71,7 +71,7 @@ def test_wait_stops_after_one_point_without_changing_active_or_cached_batches(db
     original_components = db.query("SELECT * FROM component_cache")
     calls = prepare(monkeypatch, tmp_path, db, tail_gap())
     assert cli.main() == 0
-    assert calls == [("forecast", 1)]
+    assert calls == [("forecast_probe", 1)]
     receipt = json.loads((tmp_path / "daily-receipt.json").read_text())
     assert receipt["status"] == "WAITING_FORECAST_PROVIDER"
     assert receipt["generation"] is None
@@ -153,7 +153,7 @@ def test_deadline_is_full_utc_instant_across_dst(day, instant, expected):
     assert readiness.may_wait(day, datetime.fromisoformat(instant), forced=False) is expected
 
 
-def test_available_probe_is_reused_but_all_418_still_require_validation(db, monkeypatch, tmp_path):
+def test_minimal_probe_is_not_cached_and_all_418_still_require_validation(db, monkeypatch, tmp_path):
     publish(db, day="2026-11-03", generation="yesterday")
     prepare(monkeypatch, tmp_path, db, forecast())
     monkeypatch.setattr(cli, "fetch_official_rain", lambda *a, **k: ({}, {}))
@@ -162,20 +162,20 @@ def test_available_probe_is_reused_but_all_418_still_require_validation(db, monk
 
     def only_probe_ready(http, stations, **options):
         calls.append((options["component"], len(stations)))
-        if options["component"] == "forecast" and len(stations) == 1:
+        if options["component"] == "forecast_probe":
             return {stations[0]["code"]: record(forecast(), stations[0]["code"])}, []
         if options["component"] == "forecast":
-            assert CODES[0]["code"] not in {s["code"] for s in stations}
+            assert CODES[0]["code"] in {s["code"] for s in stations}
             return {s["code"]: record(tail_gap(), s["code"]) for s in stations}, []
         return {}, ["fixture: other components unavailable"]
 
     monkeypatch.setattr(cli, "fetch_component", only_probe_ready)
     with pytest.raises(SystemExit, match="R6 incompleta"):
         cli.main()
-    assert calls[:3] == [("forecast", 1), ("current", 418), ("forecast", 417)]
+    assert calls[:3] == [("forecast_probe", 1), ("current", 418), ("forecast", 418)]
     assert db.active_generation() == "yesterday"
     rejects = json.loads((tmp_path / "forecast-rejections.json").read_text())["rejections"]
-    assert len(rejects) == 417
+    assert len(rejects) == 418
     assert all(item["issues"][0]["offset"] == 15 for item in rejects)
 
 
@@ -205,8 +205,8 @@ def test_full_real_assembly_publishes_once_and_next_attempt_uses_active(db, monk
     def sources(http, stations, **options):
         component = options["component"]
         calls.append((component, len(stations)))
-        assert component in {"forecast", "current", "soil"}
-        payload = forecast() if component == "forecast" else {"current":
+        assert component in {"forecast_probe", "forecast", "current", "soil"}
+        payload = forecast() if component in {"forecast", "forecast_probe"} else {"current":
             {"time": DAY + "T05:00", "temperature_2m": 12, "relative_humidity_2m": 80, "wind_speed_10m": 2}
             if component == "current" else {"time": DAY + "T05:00", "soil_moisture_3_to_9cm": 0.2,
                                            "soil_moisture_9_to_27cm": 0.3}}
@@ -222,7 +222,7 @@ def test_full_real_assembly_publishes_once_and_next_attempt_uses_active(db, monk
     assert active["coverage"]["scientific_complete"] == 418
     snapshot = json.loads((tmp_path / "snapshot.json").read_text())
     assert snapshot["data"][0]["forecast_precipitation_15d_mm"] == sum(range(1, 16))
-    assert calls == [("forecast", 1), ("current", 418), ("forecast", 417), ("soil", 418)]
+    assert calls == [("forecast_probe", 1), ("current", 418), ("forecast", 418), ("soil", 418)]
     assert json.loads((tmp_path / "daily-receipt.json").read_text())["status"] == "DAILY_PUBLISHED"
     calls.clear()
     assert cli.main() == 0
