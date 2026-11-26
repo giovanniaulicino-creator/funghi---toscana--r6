@@ -4,7 +4,8 @@
 # R638-BACKEND-COPERNICUS-LONGHYDRO-2026-10-03
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from math import isfinite
 from typing import Any
 
 
@@ -197,6 +198,22 @@ def assemble_station(
     def fvalid(start_day: int, end_day: int, key: str) -> int:
         return _valid_count(_daily_forecast_slice(frc, start_day, end_day, key, resolved_target_day))
 
+    # The published Tmin must come from the provider's daily series. Preserve
+    # gaps by calendar date so a missing day cannot shift the target window.
+    daily_forecast = frc.get("daily") or {}
+    forecast_minima = {}
+    for day, raw in zip(daily_forecast.get("time") or [], daily_forecast.get("temperature_2m_min") or []):
+        value = None if isinstance(raw, bool) else _n(raw)
+        forecast_minima[str(day)] = value if value is not None and isfinite(value) else None
+    forecast_base_day = date.fromisoformat(resolved_target_day)
+
+    def minima(start_day: int, end_day: int) -> list[float | None]:
+        return [forecast_minima.get((forecast_base_day + timedelta(days=i)).isoformat())
+                for i in range(start_day, end_day + 1)]
+
+    min_7, min_15 = minima(1, 7), minima(1, 15)
+    min_target_7, min_target_15 = min_7[4:], min_15[11:]
+
     def fdiurnal(start_day: int, end_day: int) -> float | None:
         mins = _daily_forecast_slice(frc, start_day, end_day, "temperature_2m_min", resolved_target_day)
         maxs = _daily_forecast_slice(frc, start_day, end_day, "temperature_2m_max", resolved_target_day)
@@ -295,6 +312,14 @@ def assemble_station(
         # +15 usa giorni 12–15. QPF ed ET0 cumulativi restano separati.
         "forecast_temperature_max_mean_7d_c": _mean(_daily_forecast(frc, 7, "temperature_2m_max", resolved_target_day)),
         "forecast_temperature_max_mean_15d_c": _mean(_daily_forecast(frc, 15, "temperature_2m_max", resolved_target_day)),
+        "forecast_temperature_min_mean_7d_c": _mean(min_7),
+        "forecast_temperature_min_mean_15d_c": _mean(min_15),
+        "forecast_temperature_min_7d_valid_days": _valid_count(min_7),
+        "forecast_temperature_min_15d_valid_days": _valid_count(min_15),
+        "forecast_temperature_min_target_7d_c": _mean(min_target_7),
+        "forecast_temperature_min_target_15d_c": _mean(min_target_15),
+        "forecast_temperature_min_target_7d_valid_days": _valid_count(min_target_7),
+        "forecast_temperature_min_target_15d_valid_days": _valid_count(min_target_15),
         "forecast_humidity_max_mean_7d_pct": _mean(_daily_forecast(frc, 7, "relative_humidity_2m_max", resolved_target_day)),
         "forecast_humidity_max_mean_15d_pct": _mean(_daily_forecast(frc, 15, "relative_humidity_2m_max", resolved_target_day)),
         "forecast_wind_gust_mean_7d_ms": _mean(_daily_forecast(frc, 7, "wind_gusts_10m_mean", resolved_target_day)),
@@ -410,6 +435,10 @@ def coverage(stations: list[dict[str, Any]]) -> dict[str, int]:
         "vegetation_indices": count(lambda s: any(numeric(s, k) for k in ["ndvi_current", "ndmi_current", "evi_current"])),
         "forecast_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_7d_mm", "forecast_temperature_mean_7d_c", "forecast_et0_7d_mm"])),
         "forecast_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_15d_mm", "forecast_temperature_mean_15d_c", "forecast_et0_15d_mm"])),
+        "forecast_tmin_7": count(lambda s: numeric(s, "forecast_temperature_min_mean_7d_c")),
+        "forecast_tmin_15": count(lambda s: numeric(s, "forecast_temperature_min_mean_15d_c")),
+        "forecast_tmin_full_7": count(lambda s: numeric(s, "forecast_temperature_min_mean_7d_c") and s.get("forecast_temperature_min_7d_valid_days") == 7),
+        "forecast_tmin_full_15": count(lambda s: numeric(s, "forecast_temperature_min_mean_15d_c") and s.get("forecast_temperature_min_15d_valid_days") == 15),
         "forecast_timing_7": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_days1_2_7d_mm", "forecast_precipitation_days3_4_7d_mm", "forecast_precipitation_days5_7_7d_mm"])),
         "forecast_timing_15": count(lambda s: all(numeric(s, k) for k in ["forecast_precipitation_days1_3_15d_mm", "forecast_precipitation_days4_7_15d_mm", "forecast_precipitation_days8_11_15d_mm", "forecast_precipitation_days12_15_15d_mm"])),
         "et0": count(lambda s: all(numeric(s, k) for k in ["et0_30d_mm", "forecast_et0_7d_mm", "forecast_et0_15d_mm"])),
